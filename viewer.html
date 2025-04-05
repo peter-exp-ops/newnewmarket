@@ -22,12 +22,12 @@
                     position: relative;
                     background-color: #4c6ef5;
                     color: white;
-                    padding: 80px 0;
+                    padding: 40px 0;
                     text-align: center;
-                    margin-bottom: 40px;
+                    margin-bottom: 20px;
                 }
                 .hero-image {
-                    max-width: 150px;
+                    max-width: 100px;
                     display: block;
                     margin: 0 auto 20px;
                 }
@@ -53,6 +53,43 @@
                     padding: 15px;
                     margin-bottom: 20px;
                 }
+                /* Tab styling */
+                .tabs {
+                    overflow: hidden;
+                    background-color: #f1f1f1;
+                    border-radius: 4px 4px 0 0;
+                }
+                .tabs button {
+                    background-color: inherit;
+                    float: left;
+                    border: none;
+                    outline: none;
+                    cursor: pointer;
+                    padding: 14px 16px;
+                    transition: 0.3s;
+                    font-size: 16px;
+                }
+                .tabs button:hover {
+                    background-color: #ddd;
+                }
+                .tabs button.active {
+                    background-color: #4c6ef5;
+                    color: white;
+                }
+                .tabcontent {
+                    display: none;
+                    padding: 6px 12px;
+                    border: 1px solid #ccc;
+                    border-top: none;
+                    border-radius: 0 0 4px 4px;
+                    background-color: white;
+                }
+                /* Table styling */
+                .table-container {
+                    overflow-x: auto;
+                    max-height: 600px;
+                    margin-top: 20px;
+                }
                 table {
                     width: 100%;
                     border-collapse: collapse;
@@ -62,10 +99,14 @@
                     padding: 12px 15px;
                     border-bottom: 1px solid #ddd;
                     text-align: left;
+                    white-space: nowrap;
                 }
                 th {
+                    position: sticky;
+                    top: 0;
                     background-color: #4c6ef5;
                     color: white;
+                    z-index: 10;
                 }
                 tr:nth-child(even) {
                     background-color: #f2f2f2;
@@ -80,6 +121,59 @@
                     color: #6c757d;
                     padding-bottom: 20px;
                 }
+                /* URL styling */
+                .url-cell {
+                    max-width: 300px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                .url-cell:hover {
+                    overflow: visible;
+                    white-space: normal;
+                    word-break: break-all;
+                }
+                /* Status styling */
+                .status-processed {
+                    background-color: #d4edda;
+                    color: #155724;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }
+                .status-future {
+                    background-color: #cce5ff;
+                    color: #004085;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }
+                .status-error {
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }
+                /* Future races section */
+                .future-races-section {
+                    background-color: #e6f7ff;
+                    border: 1px solid #91d5ff;
+                    border-radius: 4px;
+                    padding: 15px;
+                    margin-bottom: 20px;
+                }
+                .future-races-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                .future-races-table th {
+                    background-color: #1890ff;
+                }
+                .future-date-header {
+                    background-color: #f0f5ff;
+                    font-weight: bold;
+                    text-align: left;
+                    padding: 8px;
+                    border-bottom: 1px solid #d9d9d9;
+                }
             </style>
         </head>
         <body>
@@ -90,65 +184,143 @@
             </div>
             
             <div class="container">
-                <p>Report generated on 2025-04-05 09:36:47</p>
+                <p>Report generated on 2025-04-05 13:59:56</p>
                 
                 <div class="info-box">
                     <h2>Database Information</h2>
-                    <p>Tables in database: races, sqlite_sequence</p>
-                    <p>Total races: 1</p>
+                    <p>Tables in database: races, sqlite_sequence, processed_urls</p>
                 </div>
-                
-                <h2>Race Information</h2>
         
-                <h3>Race Summary</h3>
-                <table>
-                    <tr>
-                        <th>ID</th>
-                        <th>Racecourse</th>
-                        <th>Date</th>
-                        <th>Time</th>
-                        <th>Race Name</th>
-                        <th>Class</th>
-                        <th>Runners</th>
-                    </tr>
-            
-                    <tr>
-                        <td>2</td>
-                        <td>Chepstow</td>
-                        <td>2025-04-05</td>
-                        <td>12:40</td>
-                        <td>Best Odds Guaranteed With DragonBet EBF Junior 'National Hunt' Hurdle (GBB Race)</td>
-                        <td>Class 4</td>
-                        <td>4</td>
-                    </tr>
-                </table><h3>Detailed Race Cards</h3>
-                <div class="info-box">
-                    <h3>Chepstow - 12:40 - 2025-04-05</h3>
-                    <h4>Best Odds Guaranteed With DragonBet EBF Junior 'National Hunt' Hurdle (GBB Race)</h4>
-                    <table>
-                        <tr>
-                            <th>Field</th>
-                            <th>Value</th>
-                        </tr>
-                        <tr><td>Racecourse</td><td>Chepstow</td></tr>
-                        <tr><td>Date</td><td>2025-04-05</td></tr>
-                        <tr><td>Time</td><td>12:40</td></tr>
-                        <tr><td>Race Name</td><td>Best Odds Guaranteed With DragonBet EBF Junior 'National Hunt' Hurdle (GBB Race)</td></tr>
-                        <tr><td>Age Restrictions</td><td>4YO only</td></tr>
-                        <tr><td>Class</td><td>Class 4</td></tr>
-                        <tr><td>Distance</td><td>2m 11y</td></tr>
-                        <tr><td>Going</td><td>Good</td></tr>
-                        <tr><td>Runners</td><td>4</td></tr>
-                        <tr><td>Surface</td><td>Turf</td></tr>
-                        <tr><td>Source URL</td><td><a href="https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851313/best-odds-guaranteed-with-dragonbet-ebf-junior-national-hunt-hurdle-gbb-race" target="_blank">View at Sporting Life</a></td></tr>
-                        <tr><td>Scraped at</td><td>2025-04-05 09:25:30</td></tr>
-                    </table>
+                <div class="tabs">
+        <button class="tablinks active" onclick="openTab(event, 'races')">races</button>
+<button class="tablinks " onclick="openTab(event, 'sqlite_sequence')">sqlite_sequence</button>
+<button class="tablinks " onclick="openTab(event, 'processed_urls')">processed_urls</button>
+
                 </div>
-                
+        
+                <div id="races" class="tabcontent" style="display: block;">
+                    <h3>Races Table</h3>
+                    <p>Total rows: 1</p>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+            <th>id</th>
+<th>racecourse</th>
+<th>time</th>
+<th>date</th>
+<th>race_name</th>
+<th>age_restrictions</th>
+<th>class</th>
+<th>distance</th>
+<th>going</th>
+<th>runners</th>
+<th>surface</th>
+<th>url</th>
+<th>scraped_at</th>
+
+                                </tr>
+                            </thead>
+                            <tbody>
+            <tr>
+<td>2</td>
+<td>Chepstow</td>
+<td>14:15</td>
+<td>2025-04-05</td>
+<td>DragonBet The Independent Bookmaker Handicap Chase (GBB Race)</td>
+<td>5YO plus</td>
+<td>Class 4</td>
+<td>2m 7f 131y</td>
+<td>Good</td>
+<td>5</td>
+<td>Turf</td>
+<td class="url-cell"><a href="https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851316/dragonbet-the-independent-bookmaker-handicap-chase-gbb-race" target="_blank">https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851316/dragonbet-the-independent-bookmaker-handicap-chase-gbb-race</a></td>
+<td>2025-04-05 13:59:49</td>
+</tr>
+
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            
+                <div id="sqlite_sequence" class="tabcontent" style="display: none;">
+                    <h3>Sqlite_sequence Table</h3>
+                    <p>Total rows: 1</p>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+            <th>name</th>
+<th>seq</th>
+
+                                </tr>
+                            </thead>
+                            <tbody>
+            <tr>
+<td>races</td>
+<td>2</td>
+</tr>
+
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            
+                <div id="processed_urls" class="tabcontent" style="display: none;">
+                    <h3>Processed_urls Table</h3>
+                    <p>Total rows: 1</p>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+            <th>url</th>
+<th>processed_at</th>
+<th>status</th>
+<th>race_date</th>
+<th>race_time</th>
+
+                                </tr>
+                            </thead>
+                            <tbody>
+            <tr>
+<td class="url-cell"><a href="https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851316/dragonbet-the-independent-bookmaker-handicap-chase-gbb-race" target="_blank">https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851316/dragonbet-the-independent-bookmaker-handicap-chase-gbb-race</a></td>
+<td>2025-04-05 13:59:49</td>
+<td><span class="status-processed">processed</span></td>
+<td></td>
+<td></td>
+</tr>
+
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            
                 <div class="footer">
                     <p>Generated by Racing Database Viewer</p>
                 </div>
             </div>
+            
+            <script>
+            function openTab(evt, tabName) {
+                var i, tabcontent, tablinks;
+                
+                // Hide all tab content
+                tabcontent = document.getElementsByClassName("tabcontent");
+                for (i = 0; i < tabcontent.length; i++) {
+                    tabcontent[i].style.display = "none";
+                }
+                
+                // Remove active class from all tab buttons
+                tablinks = document.getElementsByClassName("tablinks");
+                for (i = 0; i < tablinks.length; i++) {
+                    tablinks[i].className = tablinks[i].className.replace(" active", "");
+                }
+                
+                // Show the current tab and add active class to the button
+                document.getElementById(tabName).style.display = "block";
+                evt.currentTarget.className += " active";
+            }
+            </script>
         </body>
         </html>
         

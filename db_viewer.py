@@ -4,43 +4,30 @@ import pandas as pd
 import os
 import webbrowser
 from datetime import datetime
-import base64
 
 def generate_html_report():
-    """Generate an HTML report from the racing_data.db file"""
+    """Generate an HTML report from the racing_data.db file with a tabbed interface"""
     try:
         # Connect to the database
         conn = sqlite3.connect('racing_data.db')
-        
-        # Get all race data
-        query = "SELECT * FROM races"
-        df = pd.read_sql_query(query, conn)
         
         # Get table names
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
+        table_names = [table[0] for table in tables]
         
-        # Get column information for the races table
-        cursor.execute("PRAGMA table_info(races)")
-        columns = cursor.fetchall()
-        
-        # Count rows in the races table
-        cursor.execute("SELECT COUNT(*) FROM races")
-        count = cursor.fetchone()[0]
-        
-        # Get paths to icon files
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        favicon_path = os.path.join(current_dir, 'Icon 32px.png')
-        hero_image_path = os.path.join(current_dir, 'Icon 512px.png')
-        
-        # Read the favicon and encode it as base64
-        favicon_base64 = ""
-        if os.path.exists(favicon_path):
-            with open(favicon_path, 'rb') as f:
-                favicon_data = f.read()
-                favicon_base64 = base64.b64encode(favicon_data).decode('utf-8')
-        
+        # Check if we have future races
+        has_future_races = False
+        future_races_data = []
+        try:
+            cursor.execute("SELECT url, race_date, race_time FROM processed_urls WHERE status='future' ORDER BY race_date, race_time")
+            future_races_data = cursor.fetchall()
+            has_future_races = len(future_races_data) > 0
+        except sqlite3.OperationalError:
+            # Table might not have the required columns yet
+            pass
+            
         # Generate HTML content
         html_content = f"""
         <!DOCTYPE html>
@@ -66,12 +53,12 @@ def generate_html_report():
                     position: relative;
                     background-color: #4c6ef5;
                     color: white;
-                    padding: 80px 0;
+                    padding: 40px 0;
                     text-align: center;
-                    margin-bottom: 40px;
+                    margin-bottom: 20px;
                 }}
                 .hero-image {{
-                    max-width: 150px;
+                    max-width: 100px;
                     display: block;
                     margin: 0 auto 20px;
                 }}
@@ -97,6 +84,43 @@ def generate_html_report():
                     padding: 15px;
                     margin-bottom: 20px;
                 }}
+                /* Tab styling */
+                .tabs {{
+                    overflow: hidden;
+                    background-color: #f1f1f1;
+                    border-radius: 4px 4px 0 0;
+                }}
+                .tabs button {{
+                    background-color: inherit;
+                    float: left;
+                    border: none;
+                    outline: none;
+                    cursor: pointer;
+                    padding: 14px 16px;
+                    transition: 0.3s;
+                    font-size: 16px;
+                }}
+                .tabs button:hover {{
+                    background-color: #ddd;
+                }}
+                .tabs button.active {{
+                    background-color: #4c6ef5;
+                    color: white;
+                }}
+                .tabcontent {{
+                    display: none;
+                    padding: 6px 12px;
+                    border: 1px solid #ccc;
+                    border-top: none;
+                    border-radius: 0 0 4px 4px;
+                    background-color: white;
+                }}
+                /* Table styling */
+                .table-container {{
+                    overflow-x: auto;
+                    max-height: 600px;
+                    margin-top: 20px;
+                }}
                 table {{
                     width: 100%;
                     border-collapse: collapse;
@@ -106,10 +130,14 @@ def generate_html_report():
                     padding: 12px 15px;
                     border-bottom: 1px solid #ddd;
                     text-align: left;
+                    white-space: nowrap;
                 }}
                 th {{
+                    position: sticky;
+                    top: 0;
                     background-color: #4c6ef5;
                     color: white;
+                    z-index: 10;
                 }}
                 tr:nth-child(even) {{
                     background-color: #f2f2f2;
@@ -123,6 +151,59 @@ def generate_html_report():
                     font-size: 0.8em;
                     color: #6c757d;
                     padding-bottom: 20px;
+                }}
+                /* URL styling */
+                .url-cell {{
+                    max-width: 300px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }}
+                .url-cell:hover {{
+                    overflow: visible;
+                    white-space: normal;
+                    word-break: break-all;
+                }}
+                /* Status styling */
+                .status-processed {{
+                    background-color: #d4edda;
+                    color: #155724;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }}
+                .status-future {{
+                    background-color: #cce5ff;
+                    color: #004085;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }}
+                .status-error {{
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    border-radius: 4px;
+                    padding: 3px 6px;
+                }}
+                /* Future races section */
+                .future-races-section {{
+                    background-color: #e6f7ff;
+                    border: 1px solid #91d5ff;
+                    border-radius: 4px;
+                    padding: 15px;
+                    margin-bottom: 20px;
+                }}
+                .future-races-table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                }}
+                .future-races-table th {{
+                    background-color: #1890ff;
+                }}
+                .future-date-header {{
+                    background-color: #f0f5ff;
+                    font-weight: bold;
+                    text-align: left;
+                    padding: 8px;
+                    border-bottom: 1px solid #d9d9d9;
                 }}
             </style>
         </head>
@@ -138,80 +219,165 @@ def generate_html_report():
                 
                 <div class="info-box">
                     <h2>Database Information</h2>
-                    <p>Tables in database: {', '.join([table[0] for table in tables])}</p>
-                    <p>Total races: {count}</p>
+                    <p>Tables in database: {', '.join(table_names)}</p>
                 </div>
-                
-                <h2>Race Information</h2>
         """
         
-        if df.empty:
-            html_content += "<p>No race data found in the database.</p>"
-        else:
-            # First add a summary table with key race info
+        # Add future races section if we have future races
+        if has_future_races:
             html_content += """
-                <h3>Race Summary</h3>
-                <table>
-                    <tr>
-                        <th>ID</th>
-                        <th>Racecourse</th>
-                        <th>Date</th>
-                        <th>Time</th>
-                        <th>Race Name</th>
-                        <th>Class</th>
-                        <th>Runners</th>
-                    </tr>
+                <div class="future-races-section">
+                    <h2>Upcoming Races</h2>
+                    <p>Races that have been identified but are scheduled for the future:</p>
+                    <div class="table-container">
+                        <table class="future-races-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Time</th>
+                                    <th>URL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
             """
             
-            for _, row in df.iterrows():
+            # Group future races by date
+            current_date = None
+            for url, race_date, race_time in future_races_data:
+                # Format the date for display
+                if race_date != current_date:
+                    current_date = race_date
+                    html_content += f"""
+                                <tr>
+                                    <td colspan="3" class="future-date-header">{race_date}</td>
+                                </tr>
+                    """
+                
                 html_content += f"""
-                    <tr>
-                        <td>{row['id']}</td>
-                        <td>{row['racecourse']}</td>
-                        <td>{row['date']}</td>
-                        <td>{row['time']}</td>
-                        <td>{row['race_name']}</td>
-                        <td>{row['class']}</td>
-                        <td>{row['runners']}</td>
-                    </tr>
+                                <tr>
+                                    <td>{race_date}</td>
+                                    <td>{race_time}</td>
+                                    <td class="url-cell"><a href="{url}" target="_blank">{url}</a></td>
+                                </tr>
                 """
             
-            html_content += "</table>"
-            
-            # Then add detailed race cards
-            html_content += "<h3>Detailed Race Cards</h3>"
-            
-            for _, row in df.iterrows():
-                html_content += f"""
-                <div class="info-box">
-                    <h3>{row['racecourse']} - {row['time']} - {row['date']}</h3>
-                    <h4>{row['race_name']}</h4>
-                    <table>
-                        <tr>
-                            <th>Field</th>
-                            <th>Value</th>
-                        </tr>
-                        <tr><td>Racecourse</td><td>{row['racecourse']}</td></tr>
-                        <tr><td>Date</td><td>{row['date']}</td></tr>
-                        <tr><td>Time</td><td>{row['time']}</td></tr>
-                        <tr><td>Race Name</td><td>{row['race_name']}</td></tr>
-                        <tr><td>Age Restrictions</td><td>{row['age_restrictions']}</td></tr>
-                        <tr><td>Class</td><td>{row['class']}</td></tr>
-                        <tr><td>Distance</td><td>{row['distance']}</td></tr>
-                        <tr><td>Going</td><td>{row['going']}</td></tr>
-                        <tr><td>Runners</td><td>{row['runners']}</td></tr>
-                        <tr><td>Surface</td><td>{row['surface']}</td></tr>
-                        <tr><td>Source URL</td><td><a href="{row['url']}" target="_blank">View at Sporting Life</a></td></tr>
-                        <tr><td>Scraped at</td><td>{row['scraped_at']}</td></tr>
-                    </table>
+            html_content += """
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
-                """
+            """
+                
+        # Generate tabs section
+        html_content += """
+                <div class="tabs">
+        """
         
+        # Generate tab buttons
+        for i, table in enumerate(table_names):
+            active = "active" if i == 0 else ""
+            html_content += f'<button class="tablinks {active}" onclick="openTab(event, \'{table}\')">{table}</button>\n'
+        
+        html_content += """
+                </div>
+        """
+        
+        # Generate tab content for each table
+        for i, table in enumerate(table_names):
+            # Get data for this table
+            query = f"SELECT * FROM {table}"
+            df = pd.read_sql_query(query, conn)
+            
+            # Get column information
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = cursor.fetchall()
+            column_names = [col[1] for col in columns]
+            
+            # Count rows in the table
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            count = cursor.fetchone()[0]
+            
+            # Set display style for first tab
+            display = "block" if i == 0 else "none"
+            
+            html_content += f"""
+                <div id="{table}" class="tabcontent" style="display: {display};">
+                    <h3>{table.capitalize()} Table</h3>
+                    <p>Total rows: {count}</p>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+            """
+            
+            # Add table headers
+            for col in column_names:
+                html_content += f"<th>{col}</th>\n"
+            
+            html_content += """
+                                </tr>
+                            </thead>
+                            <tbody>
+            """
+            
+            # Add table rows
+            if not df.empty:
+                for _, row in df.iterrows():
+                    html_content += "<tr>\n"
+                    for col in column_names:
+                        # Special handling for URL fields
+                        if 'url' in col.lower():
+                            html_content += f'<td class="url-cell"><a href="{row[col]}" target="_blank">{row[col]}</a></td>\n'
+                        # Special handling for status field in processed_urls table
+                        elif table == 'processed_urls' and col == 'status':
+                            status_class = 'status-processed'
+                            if row[col] == 'future':
+                                status_class = 'status-future'
+                            elif row[col] == 'error':
+                                status_class = 'status-error'
+                            html_content += f'<td><span class="{status_class}">{row[col]}</span></td>\n'
+                        else:
+                            cell_value = row[col] if pd.notna(row[col]) else ""
+                            html_content += f"<td>{cell_value}</td>\n"
+                    html_content += "</tr>\n"
+            else:
+                html_content += f"<tr><td colspan='{len(column_names)}'>No data found in this table</td></tr>\n"
+            
+            html_content += """
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            """
+        
+        # Add JavaScript for tab functionality
         html_content += """
                 <div class="footer">
                     <p>Generated by Racing Database Viewer</p>
                 </div>
             </div>
+            
+            <script>
+            function openTab(evt, tabName) {
+                var i, tabcontent, tablinks;
+                
+                // Hide all tab content
+                tabcontent = document.getElementsByClassName("tabcontent");
+                for (i = 0; i < tabcontent.length; i++) {
+                    tabcontent[i].style.display = "none";
+                }
+                
+                // Remove active class from all tab buttons
+                tablinks = document.getElementsByClassName("tablinks");
+                for (i = 0; i < tablinks.length; i++) {
+                    tablinks[i].className = tablinks[i].className.replace(" active", "");
+                }
+                
+                // Show the current tab and add active class to the button
+                document.getElementById(tabName).style.display = "block";
+                evt.currentTarget.className += " active";
+            }
+            </script>
         </body>
         </html>
         """
@@ -257,27 +423,43 @@ def check_database():
         tables = cursor.fetchall()
         print(f"Tables in database: {[table[0] for table in tables]}")
         
-        # Get column information for the races table
-        cursor.execute("PRAGMA table_info(races)")
-        columns = cursor.fetchall()
-        print("\nColumns in races table:")
-        for col in columns:
-            print(f"  {col[1]} ({col[2]})")
-        
-        # Count rows in the races table
-        cursor.execute("SELECT COUNT(*) FROM races")
-        count = cursor.fetchone()[0]
-        print(f"\nTotal races in database: {count}")
-        
-        # Get all race data and display it using pandas
-        query = "SELECT * FROM races"
-        df = pd.read_sql_query(query, conn)
-        
-        # Print the DataFrame with all columns
-        pd.set_option('display.max_columns', None)
-        pd.set_option('display.width', 1000)
-        print("\nRace data in database:")
-        print(df)
+        # Check for future races
+        try:
+            cursor.execute("SELECT COUNT(*) FROM processed_urls WHERE status='future'")
+            future_count = cursor.fetchone()[0]
+            if future_count > 0:
+                print(f"\nFound {future_count} future races in the processed_urls table")
+                print("To view details, run newnewmarket.py with the --list-future flag")
+        except sqlite3.OperationalError:
+            # Table might not have the required column
+            pass
+            
+        # For each table, get and display information
+        for table in tables:
+            table_name = table[0]
+            
+            # Get column information
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = cursor.fetchall()
+            print(f"\nColumns in {table_name} table:")
+            for col in columns:
+                print(f"  {col[1]} ({col[2]})")
+            
+            # Count rows in the table
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            count = cursor.fetchone()[0]
+            print(f"\nTotal rows in {table_name} table: {count}")
+            
+            # Get all data and display it using pandas (limited to first 10 rows)
+            query = f"SELECT * FROM {table_name} LIMIT 10"
+            df = pd.read_sql_query(query, conn)
+            
+            # Print the DataFrame with all columns
+            pd.set_option('display.max_columns', None)
+            pd.set_option('display.width', 1000)
+            print(f"\nData in {table_name} table (first 10 rows):")
+            print(df)
+            print("-" * 80)
         
         # Close the connection
         conn.close()
