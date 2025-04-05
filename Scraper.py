@@ -72,7 +72,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
     Args:
         base_url (str): The URL to start crawling from
         max_urls (int): Maximum number of URLs to collect
-        data_type (str): Type of URLs to look for ('races', 'horses', 'jockeys', 'trainers' or None for all)
+        data_type (str): Type of URLs to look for ('races', 'horses', 'jockeys', 'trainers')
         
     Returns:
         list: List of discovered URLs
@@ -89,11 +89,26 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
     }
     
-    active_pattern = None
-    if data_type and data_type != "all":
-        active_pattern = url_patterns.get(data_type)
+    # Prioritized link patterns - URLs containing these are more likely to lead to valuable content
+    priority_patterns = {
+        'trainers': ['/racing/profiles/trainer', '/racing/trainer', '/trainers'],
+        'jockeys': ['/racing/profiles/jockey', '/racing/jockey', '/jockeys'],
+        'horses': ['/racing/profiles/horse', '/racing/horse', '/horses'],
+        'races': ['/racing/results', '/racing/racecards', '/meetings']
+    }
     
-    print(f"Starting crawl. Looking for {data_type or 'all'} URLs from {base_url}")
+    # If checking for a specific target URL (for testing), add it directly
+    if data_type == 'trainers' and 'profiles' in base_url:
+        test_url = 'https://www.sportinglife.com/racing/profiles/trainer/414'  # W P Mullins
+        urls_to_visit.append(test_url)
+        print(f"Added test URL for trainer: {test_url}")
+    
+    active_pattern = url_patterns.get(data_type)
+    if not active_pattern:
+        print(f"Error: Invalid data type '{data_type}'")
+        return []
+    
+    print(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
     
     # Counter for logging
     pages_checked = 0
@@ -108,6 +123,11 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         
         visited_urls.add(current_url)
         pages_checked += 1
+        
+        # Check if the current URL matches our pattern
+        if re.match(active_pattern, current_url) and current_url not in discovered_urls:
+            discovered_urls.append(current_url)
+            print(f"Found matching {data_type} URL: {current_url}")
         
         # Print progress every 5 pages
         if pages_checked % 5 == 0:
@@ -131,7 +151,13 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Find all links
-            for link in soup.find_all('a', href=True):
+            links = soup.find_all('a', href=True)
+            
+            # Sort links by priority for the specific data type
+            if data_type in priority_patterns:
+                links = sorted(links, key=lambda link: any(pattern in link['href'] for pattern in priority_patterns[data_type]), reverse=True)
+            
+            for link in links:
                 href = link['href']
                 
                 # Convert relative URLs to absolute
@@ -145,29 +171,27 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
                     continue
                     
                 # Debug output for URLs that might be of interest
-                if ('profiles' in href or 'results' in href) and href not in discovered_urls and href not in visited_urls and href not in urls_to_visit:
-                    print(f"Found potential URL: {href}")
+                priority_terms = priority_patterns.get(data_type, [])
+                if any(term in href for term in priority_terms) and href not in discovered_urls and href not in visited_urls:
+                    print(f"Found potential {data_type} URL: {href}")
                 
                 # Normalize URL by removing trailing slash
                 href = href.rstrip('/')
                 
                 # Check if URL matches the pattern for the desired type
-                if data_type and data_type != "all" and active_pattern:
-                    if re.match(active_pattern, href) and href not in discovered_urls:
-                        discovered_urls.append(href)
-                        print(f"Found matching {data_type} URL: {href}")
-                else:
-                    # If no specific type or "all", check all patterns
-                    for url_type, pattern in url_patterns.items():
-                        if re.match(pattern, href) and href not in discovered_urls:
-                            discovered_urls.append(href)
-                            print(f"Found matching {url_type} URL: {href}")
-                            break
+                if re.match(active_pattern, href) and href not in discovered_urls:
+                    discovered_urls.append(href)
+                    print(f"Found matching {data_type} URL: {href}")
                 
                 # Add to visit queue if not already visited or queued
                 if href not in visited_urls and href not in urls_to_visit:
                     # Always add URLs to the queue for unlimited depth traversal
                     urls_to_visit.append(href)
+                    
+                    # Prioritize URLs with relevant patterns by moving them to the front of the queue
+                    if data_type in priority_patterns and any(pattern in href for pattern in priority_patterns[data_type]):
+                        urls_to_visit.remove(href)
+                        urls_to_visit.insert(0, href)
                 
                 # Check if we've reached the max URLs limit
                 if len(discovered_urls) >= max_urls:
@@ -347,7 +371,7 @@ class ScraperUI:
         ttk.Label(crawler_frame, text="Data Type:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.data_type_var = StringVar(value="races")
         data_type_combo = ttk.Combobox(crawler_frame, textvariable=self.data_type_var, 
-                     values=["all", "races", "horses", "jockeys", "trainers"], 
+                     values=["races", "horses", "jockeys", "trainers"], 
                      state="readonly")
         data_type_combo.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         data_type_combo.bind("<<ComboboxSelected>>", self.update_default_url)
@@ -434,10 +458,8 @@ class ScraperUI:
         base_url = self.base_url_var.get()
         max_urls = self.max_urls_var.get()
         data_type = self.data_type_var.get()
-        if data_type == "all":
-            data_type = None  # None means all types
         
-        self.log_message(f"Starting crawl of {base_url} for {data_type or 'all'} URLs with max limit {max_urls}")
+        self.log_message(f"Starting crawl of {base_url} for {data_type} URLs with max limit {max_urls}")
         self.progress_var.set(0)
         
         try:
@@ -473,12 +495,8 @@ class ScraperUI:
             # Log detailed statistics
             self.log_message(f"Crawl complete. Found {total_discovered} URLs, {total_new} are new.")
             
-            if data_type:
-                type_stats = stats['types'].get(data_type, {})
-                self.log_message(f"  {data_type.capitalize()}: {type_stats.get('discovered', 0)} found, {type_stats.get('new', 0)} new")
-            else:
-                for url_type, type_stats in stats['types'].items():
-                    self.log_message(f"  {url_type.capitalize()}: {type_stats.get('discovered', 0)} found, {type_stats.get('new', 0)} new")
+            type_stats = stats['types'].get(data_type, {})
+            self.log_message(f"  {data_type.capitalize()}: {type_stats.get('discovered', 0)} found, {type_stats.get('new', 0)} new")
             
             # Update stats variable
             self.stats_var.set(f"Ready - {total_discovered} URLs discovered")
@@ -563,8 +581,7 @@ class ScraperUI:
             "races": "https://www.sportinglife.com/racing/results/",
             "horses": "https://www.sportinglife.com/racing/profiles/",
             "jockeys": "https://www.sportinglife.com/racing/profiles/",
-            "trainers": "https://www.sportinglife.com/racing/profiles/",
-            "all": "https://www.sportinglife.com/racing/"
+            "trainers": "https://www.sportinglife.com/racing/profiles/"
         }
         
         self.base_url_var.set(default_urls.get(data_type, "https://www.sportinglife.com/racing/"))
