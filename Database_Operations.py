@@ -12,6 +12,8 @@ import sqlite3
 import os
 import pandas as pd
 from datetime import datetime, timedelta
+import tkinter as tk
+from tkinter import messagebox, ttk, scrolledtext
 
 def connect_to_database(db_path="racing_data.db"):
     """
@@ -156,6 +158,121 @@ def create_horses_table(conn):
     conn.commit()
     return True
 
+def create_racehorses_table(conn):
+    """
+    Create the racehorses table in the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        
+    Returns:
+        bool: True if table was created or already exists
+    """
+    cursor = conn.cursor()
+    
+    # Create racehorses table with specified fields
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS racehorses (
+        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        raceID INTEGER NOT NULL,
+        horseID INTEGER NOT NULL,
+        jockeyID INTEGER,
+        trainerID INTEGER,
+        time REAL,
+        position INTEGER,
+        positionof INTEGER,
+        timeahead REAL,
+        timebehind REAL,
+        FOREIGN KEY (raceID) REFERENCES races(ID) ON DELETE CASCADE,
+        FOREIGN KEY (horseID) REFERENCES horses(ID) ON DELETE CASCADE,
+        FOREIGN KEY (jockeyID) REFERENCES jockeys(ID) ON DELETE SET NULL,
+        FOREIGN KEY (trainerID) REFERENCES trainers(ID) ON DELETE SET NULL
+    )
+    """)
+    
+    # Create indexes for faster lookups and joins
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_racehorses_race ON racehorses (raceID)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_racehorses_horse ON racehorses (horseID)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_racehorses_jockey ON racehorses (jockeyID)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_racehorses_trainer ON racehorses (trainerID)
+    """)
+    
+    # Commit the changes
+    conn.commit()
+    return True
+
+def create_urls_table(conn):
+    """
+    Create the urls table in the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        
+    Returns:
+        bool: True if table was created or already exists
+    """
+    cursor = conn.cursor()
+    
+    # Create urls table with specified fields
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS urls (
+        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        URL TEXT UNIQUE NOT NULL,
+        Date_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        Success INTEGER DEFAULT 0
+    )
+    """)
+    
+    # Create index on URL for faster lookups
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_urls_url ON urls (URL)
+    """)
+    
+    # Create index on success for filtering
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_urls_success ON urls (Success)
+    """)
+    
+    # Commit the changes
+    conn.commit()
+    return True
+
+def initialize_database(db_path="racing_data.db"):
+    """
+    Initialize the database and create necessary tables
+    
+    Args:
+        db_path (str): Path to the SQLite database file
+        
+    Returns:
+        sqlite3.Connection: Connection object
+    """
+    # Create database directory if it doesn't exist
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+    
+    # Connect to the database
+    conn = connect_to_database(db_path)
+    
+    # Create tables
+    create_races_table(conn)
+    create_trainers_table(conn)
+    create_jockeys_table(conn)
+    create_horses_table(conn)
+    create_racehorses_table(conn)
+    create_urls_table(conn)
+    
+    conn.commit()
+    return conn
+
 def rename_racehorse_table(conn):
     """
     Rename the racehorse table to racehorses
@@ -211,84 +328,6 @@ def rename_racehorse_table(conn):
     conn.commit()
     print("Table 'racehorse' renamed to 'racehorses'.")
     return True
-
-def create_racehorses_table(conn):
-    """
-    Create the racehorses table in the database
-    
-    Args:
-        conn (sqlite3.Connection): Database connection
-        
-    Returns:
-        bool: True if table was created or already exists
-    """
-    cursor = conn.cursor()
-    
-    # Create racehorses table with specified fields
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS racehorses (
-        ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        raceID INTEGER NOT NULL,
-        horseID INTEGER NOT NULL,
-        jockeyID INTEGER,
-        trainerID INTEGER,
-        time REAL,
-        position INTEGER,
-        positionof INTEGER,
-        timeahead REAL,
-        timebehind REAL,
-        FOREIGN KEY (raceID) REFERENCES races(ID) ON DELETE CASCADE,
-        FOREIGN KEY (horseID) REFERENCES horses(ID) ON DELETE CASCADE,
-        FOREIGN KEY (jockeyID) REFERENCES jockeys(ID) ON DELETE SET NULL,
-        FOREIGN KEY (trainerID) REFERENCES trainers(ID) ON DELETE SET NULL
-    )
-    """)
-    
-    # Create indexes for faster lookups and joins
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_racehorses_race ON racehorses (raceID)
-    """)
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_racehorses_horse ON racehorses (horseID)
-    """)
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_racehorses_jockey ON racehorses (jockeyID)
-    """)
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_racehorses_trainer ON racehorses (trainerID)
-    """)
-    
-    # Commit the changes
-    conn.commit()
-    return True
-
-def initialize_database(db_path="racing_data.db"):
-    """
-    Initialize the database and create necessary tables
-    
-    Args:
-        db_path (str): Path to the SQLite database file
-        
-    Returns:
-        sqlite3.Connection: Connection object
-    """
-    # Create database directory if it doesn't exist
-    db_dir = os.path.dirname(db_path)
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir)
-    
-    # Connect to the database
-    conn = connect_to_database(db_path)
-    
-    # Create tables
-    create_races_table(conn)
-    create_trainers_table(conn)
-    create_jockeys_table(conn)
-    create_horses_table(conn)
-    create_racehorses_table(conn)
-    
-    conn.commit()
-    return conn
 
 def delete_all_records(conn):
     """
@@ -352,29 +391,180 @@ def drop_all_tables(conn):
     conn.commit()
     return tables
 
-if __name__ == "__main__":
-    # Connect to database
-    print("Connecting to database...")
-    conn = connect_to_database()
-    try:
-        # Rename racehorse table to racehorses
-        print("Renaming racehorse table to racehorses...")
-        rename_racehorse_table(conn)
+def get_database_info(conn):
+    """
+    Get information about all tables in the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
         
-        # Get schema for racehorses table
-        print("\nSchema for racehorses table:")
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(racehorses)")
+    Returns:
+        str: Information about the database structure
+    """
+    cursor = conn.cursor()
+    
+    # Get all tables
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [table[0] for table in cursor.fetchall()]
+    
+    info = "Database Information:\n"
+    info += f"Found {len(tables)} tables: {', '.join(tables)}\n\n"
+    
+    # Get schema for each table
+    for table in tables:
+        info += f"Schema for {table} table:\n"
+        cursor.execute(f"PRAGMA table_info({table})")
         for column in cursor.fetchall():
             column_name = column[1]
             data_type = column[2]
-            print(f"  {column_name} ({data_type})")
+            info += f"  {column_name} ({data_type})\n"
         
-        # Check all tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [table[0] for table in cursor.fetchall()]
-        print(f"\nTables in database: {', '.join(tables)}")
+        # Get row count
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        row_count = cursor.fetchone()[0]
+        info += f"  Total rows: {row_count}\n\n"
+    
+    return info
+
+class DatabaseUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Database Operations")
+        self.root.geometry("800x600")
+        self.conn = None
         
-        print("\nDatabase update complete.")
-    finally:
-        conn.close() 
+        # Create a frame for the top section
+        self.top_frame = ttk.Frame(root, padding=10)
+        self.top_frame.pack(fill=tk.X)
+        
+        # Connection status
+        self.status_var = tk.StringVar(value="Not connected")
+        ttk.Label(self.top_frame, text="Status:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(self.top_frame, textvariable=self.status_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Connect button
+        ttk.Button(self.top_frame, text="Connect to Database", command=self.connect).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Create a frame for the buttons
+        self.button_frame = ttk.LabelFrame(root, text="Database Operations", padding=10)
+        self.button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Create buttons for each function
+        self.create_buttons()
+        
+        # Create a frame for the output
+        self.output_frame = ttk.LabelFrame(root, text="Output", padding=10)
+        self.output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create a scrolled text widget for output
+        self.output_text = scrolledtext.ScrolledText(self.output_frame, wrap=tk.WORD, width=80, height=20)
+        self.output_text.pack(fill=tk.BOTH, expand=True)
+        
+    def create_buttons(self):
+        # Row 1
+        ttk.Button(self.button_frame, text="Initialize Database", 
+                   command=lambda: self.execute_function(initialize_database, "Initializing database...")).grid(
+                   row=0, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Create Races Table", 
+                   command=lambda: self.execute_function(create_races_table, "Creating races table...")).grid(
+                   row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Create Trainers Table", 
+                   command=lambda: self.execute_function(create_trainers_table, "Creating trainers table...")).grid(
+                   row=0, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Row 2
+        ttk.Button(self.button_frame, text="Create Jockeys Table", 
+                   command=lambda: self.execute_function(create_jockeys_table, "Creating jockeys table...")).grid(
+                   row=1, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Create Horses Table", 
+                   command=lambda: self.execute_function(create_horses_table, "Creating horses table...")).grid(
+                   row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Create Racehorses Table", 
+                   command=lambda: self.execute_function(create_racehorses_table, "Creating racehorses table...")).grid(
+                   row=1, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Row 3
+        ttk.Button(self.button_frame, text="Create URLs Table", 
+                   command=lambda: self.execute_function(create_urls_table, "Creating URLs table...")).grid(
+                   row=2, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Delete All Records", 
+                   command=lambda: self.execute_function(delete_all_records, "Deleting all records...")).grid(
+                   row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        ttk.Button(self.button_frame, text="Drop All Tables", 
+                   command=lambda: self.execute_function(drop_all_tables, "Dropping all tables...")).grid(
+                   row=2, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Row 4
+        ttk.Button(self.button_frame, text="Database Info", 
+                   command=lambda: self.execute_function(get_database_info, "Getting database info...")).grid(
+                   row=3, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Configure grid weights for responsiveness
+        for i in range(3):
+            self.button_frame.columnconfigure(i, weight=1)
+        
+    def connect(self):
+        try:
+            if self.conn is not None:
+                self.conn.close()
+            
+            self.conn = connect_to_database()
+            self.status_var.set("Connected to racing_data.db")
+            self.log("Successfully connected to the database.")
+        except Exception as e:
+            self.status_var.set("Connection failed")
+            self.log(f"Failed to connect to database: {e}")
+            messagebox.showerror("Connection Error", f"Failed to connect to database: {e}")
+    
+    def execute_function(self, func, status_message):
+        if self.conn is None:
+            messagebox.showerror("Not Connected", "Please connect to the database first.")
+            return
+        
+        try:
+            self.log(status_message)
+            
+            if func == initialize_database:
+                # Special case for initialize_database
+                self.conn.close()
+                self.conn = func()
+                self.log("Database initialized successfully.")
+            elif func == get_database_info:
+                # Special case for get_database_info
+                result = func(self.conn)
+                self.log(result)
+            else:
+                # Regular function execution
+                result = func(self.conn)
+                
+                if isinstance(result, dict):
+                    # For delete_all_records
+                    for table, count in result.items():
+                        self.log(f"Deleted {count} record(s) from {table}")
+                elif isinstance(result, list):
+                    # For drop_all_tables
+                    self.log(f"Operation affected tables: {', '.join(result)}")
+                elif result is True:
+                    # For table creation functions
+                    self.log("Operation completed successfully.")
+                else:
+                    self.log(f"Result: {result}")
+            
+        except Exception as e:
+            self.log(f"Error executing operation: {e}")
+            messagebox.showerror("Operation Error", f"Failed to execute operation: {e}")
+    
+    def log(self, message):
+        self.output_text.insert(tk.END, f"{message}\n")
+        self.output_text.see(tk.END)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = DatabaseUI(root)
+    root.mainloop() 
