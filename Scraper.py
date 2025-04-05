@@ -1037,6 +1037,51 @@ class ScraperUI:
         ttk.Label(conn_frame, textvariable=self.status_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         ttk.Button(conn_frame, text="Connect to Database", command=self.connect_to_db).grid(row=0, column=2, padx=5, pady=5)
         
+        # URL Estimator section
+        estimator_frame = ttk.LabelFrame(main_frame, text="URL Estimator", padding="10")
+        estimator_frame.pack(fill=tk.X, pady=5)
+        
+        # Create estimate variables
+        self.jockey_estimate_var = StringVar(value="Unknown")
+        self.horse_estimate_var = StringVar(value="Unknown")
+        self.trainer_estimate_var = StringVar(value="Unknown")
+        
+        # Create database count variables
+        self.jockey_db_count_var = StringVar(value="0")
+        self.horse_db_count_var = StringVar(value="0")
+        self.trainer_db_count_var = StringVar(value="0")
+        
+        # Row headers
+        ttk.Label(estimator_frame, text="Type").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, text="In Database").grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, text="Estimated Total").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, text="Actions").grid(row=0, column=3, sticky=tk.W, padx=5, pady=5)
+        
+        # Jockey row
+        ttk.Label(estimator_frame, text="Jockeys:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.jockey_db_count_var).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.jockey_estimate_var).grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(estimator_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('jockeys')).grid(row=1, column=3, padx=5, pady=5)
+        
+        # Horse row
+        ttk.Label(estimator_frame, text="Horses:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.horse_db_count_var).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.horse_estimate_var).grid(row=2, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(estimator_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('horses')).grid(row=2, column=3, padx=5, pady=5)
+        
+        # Trainer row
+        ttk.Label(estimator_frame, text="Trainers:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.trainer_db_count_var).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(estimator_frame, textvariable=self.trainer_estimate_var).grid(row=3, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(estimator_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('trainers')).grid(row=3, column=3, padx=5, pady=5)
+        
+        # Refresh counts button
+        ttk.Button(estimator_frame, text="Refresh Database Counts", 
+                  command=self.update_db_counts).grid(row=4, column=0, columnspan=4, padx=5, pady=5, sticky=tk.E+tk.W)
+        
         # Crawler section
         crawler_frame = ttk.LabelFrame(main_frame, text="URL Crawler", padding="10")
         crawler_frame.pack(fill=tk.X, pady=5)
@@ -1115,6 +1160,8 @@ class ScraperUI:
             if check_database_structure():
                 self.status_var.set("Connected")
                 self.log_message("Successfully connected to the database.")
+                # Update database counts when connected
+                self.update_db_counts()
             else:
                 self.status_var.set("Connected (incomplete schema)")
                 self.log_message("Connected to database but schema is incomplete. Please initialize the database first.")
@@ -1280,6 +1327,181 @@ class ScraperUI:
         
         self.base_url_var.set(default_urls.get(data_type, "https://www.sportinglife.com/racing/"))
         self.log_message(f"Updated base URL for {data_type} data type")
+        
+    def estimate_url_count(self, url_type):
+        """
+        Estimate the upper bound of valid URLs for a given type
+        using a binary search approach to find the highest valid ID
+        
+        Args:
+            url_type (str): Type of URLs to estimate ('jockeys', 'horses', 'trainers')
+        """
+        if url_type not in ['jockeys', 'horses', 'trainers']:
+            messagebox.showerror("Invalid Type", f"URL type '{url_type}' is not supported for estimation.")
+            return
+            
+        self.log_message(f"Starting URL count estimation for {url_type}...")
+        
+        # Set variable to "Estimating..." during the search
+        if url_type == 'jockeys':
+            self.jockey_estimate_var.set("Estimating...")
+        elif url_type == 'horses':
+            self.horse_estimate_var.set("Estimating...")
+        elif url_type == 'trainers':
+            self.trainer_estimate_var.set("Estimating...")
+        
+        self.root.update_idletasks()
+        
+        # Base URLs for each type
+        base_urls = {
+            "horses": "https://www.sportinglife.com/racing/profiles/horse/",
+            "jockeys": "https://www.sportinglife.com/racing/profiles/jockey/",
+            "trainers": "https://www.sportinglife.com/racing/profiles/trainer/"
+        }
+        
+        base_url = base_urls.get(url_type)
+        
+        # Function to check if a URL is valid (exists and doesn't have an error message)
+        def is_valid_url(url):
+            try:
+                # Use GET request to check the content
+                response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+                
+                # Check if status code is OK
+                if response.status_code != 200:
+                    return False
+                    
+                # Check if the page contains an error message
+                error_text = "This component has encountered an error, please refresh the page"
+                if error_text.lower() in response.text.lower():
+                    return False
+                    
+                # Additional checks to verify it's a valid profile page
+                expected_patterns = {
+                    'jockeys': ['jockey', 'rides', 'profile'],
+                    'horses': ['horse', 'form', 'profile'],
+                    'trainers': ['trainer', 'runners', 'profile']
+                }
+                
+                # Check if at least one expected term is in the page
+                patterns = expected_patterns.get(url_type, [])
+                if not any(pattern.lower() in response.text.lower() for pattern in patterns):
+                    return False
+                    
+                return True
+                
+            except Exception as e:
+                self.log_message(f"Error checking URL {url}: {str(e)}")
+                return False
+        
+        try:
+            # Binary search to find the highest valid ID
+            low = 1  # Start with ID 1
+            high = 100000  # Initial high guess
+            last_valid = 0
+            
+            # Check if ID 1 is valid
+            if not is_valid_url(f"{base_url}1"):
+                self.log_message(f"Error: Basic {url_type} profile page (ID 1) is not accessible. The site may be down or the URL structure changed.")
+                if url_type == 'jockeys':
+                    self.jockey_estimate_var.set("Error")
+                elif url_type == 'horses':
+                    self.horse_estimate_var.set("Error")
+                elif url_type == 'trainers':
+                    self.trainer_estimate_var.set("Error") 
+                return
+            
+            # Perform binary search
+            while low <= high:
+                mid = (low + high) // 2
+                
+                # Add some delay to avoid overwhelming the server
+                time.sleep(0.3)
+                
+                # Check if mid ID is valid
+                url_to_check = f"{base_url}{mid}"
+                is_valid = is_valid_url(url_to_check)
+                
+                # Log periodically (not on every check to avoid cluttering the log)
+                if mid % 1000 == 0 or high - low < 100:
+                    self.log_message(f"Testing {url_type} ID: {mid} (range: {low}-{high}), valid: {is_valid}")
+                
+                # Update UI
+                self.root.update_idletasks()
+                
+                # If valid, search higher
+                if is_valid:
+                    last_valid = mid
+                    low = mid + 1
+                # If invalid, search lower
+                else:
+                    high = mid - 1
+            
+            # After search completes, last_valid contains our estimate
+            if last_valid > 0:
+                self.log_message(f"Estimated upper bound for {url_type}: {last_valid}")
+                
+                # Update the appropriate variable
+                if url_type == 'jockeys':
+                    self.jockey_estimate_var.set(f"~{last_valid:,}")
+                elif url_type == 'horses':
+                    self.horse_estimate_var.set(f"~{last_valid:,}")
+                elif url_type == 'trainers':
+                    self.trainer_estimate_var.set(f"~{last_valid:,}")
+            else:
+                self.log_message(f"Could not find any valid {url_type} IDs.")
+                # Update the appropriate variable
+                if url_type == 'jockeys':
+                    self.jockey_estimate_var.set("No valid IDs found")
+                elif url_type == 'horses':
+                    self.horse_estimate_var.set("No valid IDs found")
+                elif url_type == 'trainers':
+                    self.trainer_estimate_var.set("No valid IDs found")
+                
+        except Exception as e:
+            self.log_message(f"Error during estimation: {str(e)}")
+            
+            # Update the appropriate variable to show error
+            if url_type == 'jockeys':
+                self.jockey_estimate_var.set("Error")
+            elif url_type == 'horses':
+                self.horse_estimate_var.set("Error")
+            elif url_type == 'trainers':
+                self.trainer_estimate_var.set("Error")
+                
+            messagebox.showerror("Estimation Error", f"Failed to estimate {url_type} count: {str(e)}")
+    
+    def update_db_counts(self):
+        """Update database count displays for all entity types"""
+        if self.conn is None:
+            messagebox.showerror("Not Connected", "Please connect to the database first.")
+            return
+            
+        self.log_message("Updating database counts...")
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # Count jockeys
+            cursor.execute("SELECT COUNT(*) FROM jockeys")
+            jockey_count = cursor.fetchone()[0]
+            self.jockey_db_count_var.set(f"{jockey_count:,}")
+            
+            # Count horses
+            cursor.execute("SELECT COUNT(*) FROM horses")
+            horse_count = cursor.fetchone()[0]
+            self.horse_db_count_var.set(f"{horse_count:,}")
+            
+            # Count trainers
+            cursor.execute("SELECT COUNT(*) FROM trainers")
+            trainer_count = cursor.fetchone()[0]
+            self.trainer_db_count_var.set(f"{trainer_count:,}")
+            
+            self.log_message(f"Database counts updated: {jockey_count} jockeys, {horse_count} horses, {trainer_count} trainers")
+            
+        except Exception as e:
+            self.log_message(f"Error updating database counts: {str(e)}")
+            messagebox.showerror("Count Error", f"Failed to update database counts: {str(e)}")
 
 # === Main Entry Point ===
 
