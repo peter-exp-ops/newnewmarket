@@ -65,7 +65,7 @@ def check_database_structure():
 
 # === Crawling Functions ===
 
-def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
+def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, progress_callback=None, conn=None):
     """
     Crawl a website to find all sub-URLs to any depth
     
@@ -74,6 +74,8 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
         max_urls (int): Maximum number of URLs to collect
         data_type (str): Type of URLs to look for ('races', 'horses', 'jockeys', 'trainers')
         log_callback (callable): Optional callback function to log messages in real-time
+        progress_callback (callable): Optional callback function to update progress
+        conn (sqlite3.Connection): Database connection to check existing URLs
         
     Returns:
         list: List of discovered URLs
@@ -82,12 +84,23 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
     visited_urls = set()
     urls_to_visit = [base_url]
     
+    # Get already captured URLs from database
+    captured_urls = {}
+    if conn:
+        captured_urls = get_captured_urls(conn)
+        
     # Log function (use callback if provided, otherwise print)
-    def log(message):
-        if log_callback:
+    def log(message, verbose=False):
+        if not verbose and log_callback:
             log_callback(message)
-        else:
+        elif not verbose:
             print(message)
+    
+    # Update progress if callback provided
+    def update_progress(current, total):
+        if progress_callback:
+            percent = min(100, int((current / total) * 100))
+            progress_callback(percent)
     
     # URL patterns to match for different types
     url_patterns = {
@@ -116,15 +129,25 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
         urls_to_visit = []
         # Start with trainer ID 1 and increment
         for trainer_id in range(1, max_urls + 1):
-            urls_to_visit.append(f"{base_url}{trainer_id}")
-        log(f"Generated {len(urls_to_visit)} direct trainer URLs to check")
+            trainer_url = f"{base_url}{trainer_id}"
+            # Skip URLs that have already been successfully processed
+            if trainer_url in captured_urls and captured_urls[trainer_url] == 'success':
+                continue
+            urls_to_visit.append(trainer_url)
+        log(f"Generated {len(urls_to_visit)} direct trainer URLs to check (excluding already captured)")
     
     excluded_patterns = exclude_patterns.get(data_type, [])
     log(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
     log(f"Excluding URLs containing: {excluded_patterns}")
+    log(f"Skipping {len([u for u, s in captured_urls.items() if s == 'success'])} URLs already successfully captured")
     
-    # Counter for logging
+    # Summary statistics
+    total_to_check = min(max_urls * 5, len(urls_to_visit) if urls_to_visit else 5000)  # Estimate
     pages_checked = 0
+    skipped_count = 0
+    last_summary_time = time.time()
+    summary_interval = 2  # seconds
+    match_count = 0
     
     while urls_to_visit and len(discovered_urls) < max_urls:
         # Get the next URL to visit
@@ -132,6 +155,11 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
         
         # Skip if already visited
         if current_url in visited_urls:
+            continue
+        
+        # Skip if already successfully captured in database
+        if current_url in captured_urls and captured_urls[current_url] == 'success':
+            skipped_count += 1
             continue
             
         # Skip if URL contains excluded patterns
@@ -141,9 +169,14 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
         visited_urls.add(current_url)
         pages_checked += 1
         
-        # Print progress every 5 pages
-        if pages_checked % 5 == 0:
-            log(f"Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs so far")
+        # Update progress bar regularly
+        update_progress(pages_checked, total_to_check)
+        
+        # Show periodic summary instead of per-URL logging
+        current_time = time.time()
+        if current_time - last_summary_time >= summary_interval:
+            log(f"Progress: Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs, skipped {skipped_count} already captured, {len(urls_to_visit)} remaining in queue")
+            last_summary_time = current_time
         
         try:
             # Add some delay to avoid overwhelming the server
@@ -157,13 +190,17 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
             
             # Skip pages that don't exist (404) or other errors
             if response.status_code != 200:
-                log(f"Skipping {current_url}: {response.status_code}")
+                # Not logging every failed URL
                 continue
                 
             # Check if URL matches the pattern
             if re.match(active_pattern, current_url) and current_url not in discovered_urls:
                 discovered_urls.append(current_url)
-                log(f"Found matching {data_type} URL: {current_url}")
+                match_count += 1
+                
+                # Only log every 5th match to reduce verbosity
+                if match_count % 5 == 0:
+                    log(f"Found {match_count} matching {data_type} URLs so far")
                 
                 # If we've reached max_urls, stop
                 if len(discovered_urls) >= max_urls:
@@ -198,10 +235,15 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
                 # Normalize URL by removing trailing slash
                 href = href.rstrip('/')
                 
+                # Skip URLs already successfully captured
+                if href in captured_urls and captured_urls[href] == 'success':
+                    continue
+                
                 # Check if URL matches the pattern for the desired type
                 if re.match(active_pattern, href) and href not in discovered_urls:
                     discovered_urls.append(href)
-                    log(f"Found matching {data_type} URL: {href}")
+                    match_count += 1
+                    # Not logging every match to reduce verbosity
                     
                     # If we've reached max_urls, stop
                     if len(discovered_urls) >= max_urls:
@@ -212,11 +254,23 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
                     urls_to_visit.append(href)
             
         except Exception as e:
-            log(f"Error processing {current_url}: {str(e)}")
+            # Only log occasional errors to reduce verbosity
+            if random.random() < 0.1:  # Log roughly 10% of errors
+                log(f"Error processing URL: {str(e)}")
     
-    log(f"Crawl complete. Found {len(discovered_urls)} matching URLs after checking {pages_checked} pages")
+    # Set final progress
+    update_progress(100, 100)
+    
+    # Final summary
+    log(f"Crawl complete. Found {len(discovered_urls)} matching {data_type} URLs after checking {pages_checked} pages")
+    log(f"Skipped {skipped_count} URLs already successfully captured")
     if len(discovered_urls) >= max_urls:
         log(f"Reached maximum URL limit of {max_urls}")
+        
+    # Save discovered URLs to database if provided
+    if conn and discovered_urls:
+        added_count = save_urls_to_database(conn, discovered_urls, 'new')
+        log(f"Added {added_count} new URLs to database")
         
     return discovered_urls
 
@@ -252,11 +306,99 @@ def get_captured_urls(conn):
         conn (sqlite3.Connection): Database connection
         
     Returns:
-        list: List of URLs already in the database
+        dict: Dictionary of URLs and their status {url: status}
     """
-    cursor = conn.cursor()
-    cursor.execute("SELECT url FROM urls")
-    return [row[0] for row in cursor.fetchall()]
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT url, status FROM urls")
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    except Exception as e:
+        print(f"Error fetching URLs from database: {str(e)}")
+        return {}
+
+def save_urls_to_database(conn, urls, status='new'):
+    """
+    Save a list of URLs to the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        urls (list): List of URLs to save
+        status (str): Status to set for the URLs
+        
+    Returns:
+        int: Number of URLs added
+    """
+    if not urls:
+        return 0
+        
+    try:
+        cursor = conn.cursor()
+        
+        # Create table if it doesn't exist
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS urls (
+            url TEXT PRIMARY KEY,
+            timestamp TIMESTAMP,
+            status TEXT,
+            type TEXT
+        )
+        ''')
+        
+        # Get current timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Use executemany for better performance
+        rows = [(url, timestamp, status, get_url_type(url)) for url in urls]
+        cursor.executemany(
+            "INSERT OR IGNORE INTO urls (url, timestamp, status, type) VALUES (?, ?, ?, ?)",
+            rows
+        )
+        
+        conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        print(f"Error saving URLs to database: {str(e)}")
+        return 0
+
+def update_url_status(conn, url, status):
+    """
+    Update the status of a URL in the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        url (str): URL to update
+        status (str): New status ('success', 'error', 'processing', etc.)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            "UPDATE urls SET status = ?, timestamp = ? WHERE url = ?",
+            (status, timestamp, url)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating URL status: {str(e)}")
+        return False
+
+def get_url_type(url):
+    """Determine the type of URL based on its pattern"""
+    patterns = {
+        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+',
+        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+',
+        'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
+        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
+    }
+    
+    for url_type, pattern in patterns.items():
+        if re.match(pattern, url):
+            return url_type
+    
+    return 'unknown'
 
 def analyze_url_coverage(all_urls, captured_urls):
     """
@@ -480,41 +622,38 @@ class ScraperUI:
             self.crawl_stats_var.set("Crawling...")
             self.root.update_idletasks()
             
-            # Get captured URLs from database
-            self.captured_urls = get_captured_urls(self.conn)
-            self.log_message(f"Found {len(self.captured_urls)} URLs already in database")
+            # Function to update progress bar during crawling
+            def update_progress(percent):
+                self.progress_var.set(percent)
+                self.root.update_idletasks()
             
-            # Start the crawl with a callback to update the log in real-time
+            # Start the crawl with callbacks for logging and progress updates
             self.log_message("Beginning web crawl...")
+            start_time = time.time()
             self.discovered_urls = crawl_website(
                 base_url, 
                 max_urls, 
                 data_type, 
-                log_callback=self.log_message
+                log_callback=self.log_message,
+                progress_callback=update_progress,
+                conn=self.conn  # Pass database connection to check existing URLs
             )
-            
-            # Update progress
-            self.progress_var.set(50)
-            self.root.update_idletasks()
-            
-            # Analyze URL coverage
-            self.log_message("Analyzing discovered URLs...")
-            stats = analyze_url_coverage(self.discovered_urls, self.captured_urls)
-            
-            # Complete progress
-            self.progress_var.set(100)
+            crawl_time = time.time() - start_time
             
             # Update statistics in UI
-            total_discovered = stats['total_discovered']
-            total_new = stats['new_urls']
+            self.log_message(f"Crawl finished in {crawl_time:.1f} seconds")
             
-            self.crawl_stats_var.set(f"Found: {total_discovered}, New: {total_new}")
+            # Get database URLs for comparison (now includes the newly discovered ones)
+            self.captured_urls = get_captured_urls(self.conn)
+            
+            # Update UI with summary
+            total_discovered = len(self.discovered_urls)
+            total_captured = len(self.captured_urls)
+            
+            self.crawl_stats_var.set(f"Found: {total_discovered}, Total in DB: {total_captured}")
             
             # Log detailed statistics
-            self.log_message(f"Crawl complete. Found {total_discovered} URLs, {total_new} are new.")
-            
-            type_stats = stats['types'].get(data_type, {})
-            self.log_message(f"  {data_type.capitalize()}: {type_stats.get('discovered', 0)} found, {type_stats.get('new', 0)} new")
+            self.log_message(f"Crawl complete. Found {total_discovered} new URLs, database has {total_captured} total URLs")
             
             # Update stats variable
             self.stats_var.set(f"Ready - {total_discovered} URLs discovered")
