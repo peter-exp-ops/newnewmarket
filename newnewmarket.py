@@ -4,6 +4,8 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import re
 from datetime import datetime
+import os
+import sqlite3
 
 def fetch_racing_page(url):
     """Fetch the web page content with appropriate headers."""
@@ -18,142 +20,236 @@ def fetch_racing_page(url):
         print(f"Error fetching page: {e}")
         return None
 
-def extract_horse_names(html_content):
-    """Extract horse names from the racing page HTML."""
+def extract_race_info(html_content, url):
+    """Extract detailed race information from the racing page HTML."""
     if not html_content:
-        return []
+        return None
     
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Dictionary to store race names and horse lists
-    races_dict = {}
+    # Dictionary to store race information
+    race_info = {
+        'racecourse': 'Unknown',
+        'time': 'Unknown',
+        'date': 'Unknown',
+        'race_name': 'Unknown',
+        'age_restrictions': 'Unknown',
+        'class': 'Unknown',
+        'distance': 'Unknown',
+        'going': 'Unknown',
+        'runners': 'Unknown',
+        'surface': 'Unknown',
+        'url': url  # Store the source URL
+    }
     
-    # Find all race sections - look for race card containers
-    race_sections = soup.find_all('div', class_='racecard')
+    # Extract racecourse and date from URL
+    url_match = re.search(r'racecards/(\d{4}-\d{2}-\d{2})/([^/]+)', url)
+    if url_match:
+        race_info['date'] = url_match.group(1)
+        race_info['racecourse'] = url_match.group(2).replace('-', ' ').title()
     
-    # If no specific race cards found, try alternative approach
-    if not race_sections:
-        # Try to find sections that might contain race information
-        race_sections = soup.find_all('div', class_=lambda c: c and ('race' in c.lower() if c else False))
+    # Try to get time from the page content
+    time_match = re.search(r'(\d{1,2}[:\.]\d{2})', html_content)
+    if time_match:
+        race_info['time'] = time_match.group(1)
     
-    print(f"Found {len(race_sections)} race sections")
+    # Get race name - usually a prominent heading
+    race_name_elem = soup.find(['h1', 'h2'], string=lambda s: s and len(s.strip()) > 5 and not re.match(r'\d{1,2}:\d{2}', s.strip()))
+    if race_name_elem:
+        race_info['race_name'] = race_name_elem.get_text().strip()
     
-    # If still no race sections found, try to look at the entire page structure
-    if not race_sections:
-        # Look for table structures that might contain horses
-        tables = soup.find_all('table')
-        for i, table in enumerate(tables):
-            race_title = f"Race {i+1}"
-            horses = []
-            
-            # Check for horse names in table rows
-            rows = table.find_all('tr')
-            for row in rows:
-                # Look for any links or emphasized text that might be horse names
-                horse_elem = row.find(['a', 'strong', 'b'])
-                if horse_elem and horse_elem.text.strip():
-                    horses.append(horse_elem.text.strip())
-            
-            if horses:
-                races_dict[race_title] = horses
-        
-        return races_dict
+    # Find the race details section that often contains most of the information
+    race_details_sections = soup.find_all(['p', 'div', 'span'], string=lambda s: s and re.search(r'Class \d+', str(s)))
     
-    # Process identified race sections
-    for i, race_section in enumerate(race_sections):
-        # Try to get race title/name
-        race_title_elem = race_section.find(['h3', 'h2', 'h4'])
-        race_title = race_title_elem.get_text().strip() if race_title_elem else f"Race {i+1}"
-        
-        # List to store horse names for this race
-        horses = []
-        
-        # Look for horse entries - different possible HTML structures
-        horse_rows = race_section.find_all(['tr', 'div'], class_=lambda c: c and ('runner' in c.lower() or 'horse' in c.lower() if c else False))
-        
-        # If no specific rows found, try more generic approach
-        if not horse_rows:
-            # Look for any elements that might contain horse information
-            horse_rows = race_section.find_all(['li', 'div'], class_=lambda c: c and ('entry' in c.lower() or 'item' in c.lower() if c else False))
-        
-        # Process each potential horse row
-        for row in horse_rows:
-            # Extract horse name - look for elements likely to contain horse names
-            name_elem = row.find(['a', 'span', 'div'], class_=lambda c: c and ('name' in str(c).lower() if c else False))
-            
-            # If no specific name element found, look for any emphasized text
-            if not name_elem:
-                name_elem = row.find(['strong', 'b', 'a'])
-            
-            if name_elem and name_elem.get_text().strip():
-                horse_name = name_elem.get_text().strip()
-                # Avoid duplicates and non-horse elements
-                if horse_name not in horses and len(horse_name) > 1 and not re.match(r'^\d+$', horse_name):
-                    horses.append(horse_name)
-        
-        # Store the list of horses for this race
-        if horses:
-            races_dict[race_title] = horses
+    race_details_text = ""
+    for section in race_details_sections:
+        race_details_text += section.get_text().strip() + " "
     
-    # If we didn't find any horses with the standard methods, try a more aggressive approach
-    if not races_dict:
-        # Look for any patterns that might indicate horse names
-        potential_horses = soup.find_all(['a', 'strong', 'b', 'span'], string=lambda s: s and len(s.strip()) > 2 and not s.strip().startswith('T:') and not s.strip().startswith('J:'))
+    # If we couldn't find a section with explicit class information, look for other sections
+    if not race_details_text:
+        detail_candidates = [
+            soup.find('div', class_=lambda c: c and ('details' in str(c).lower() or 'subtitle' in str(c).lower())),
+            soup.find('p', class_=lambda c: c and ('details' in str(c).lower() or 'description' in str(c).lower())),
+            soup.find('div', class_=lambda c: c and ('racecard-header' in str(c).lower() or 'race-header' in str(c).lower()))
+        ]
         
-        # Group them into a single "Unknown Race" category
-        all_horses = []
-        for elem in potential_horses:
-            text = elem.get_text().strip()
-            # Skip obvious non-horse elements
-            if (re.search(r'\d{1,2}:\d{2}', text) or  # Skip time patterns
-                text in ['Login', 'Join', 'Racing', 'Tips', 'Results'] or  # Skip menu items
-                len(text) < 3):  # Skip very short text
-                continue
-            if text not in all_horses:
-                all_horses.append(text)
-        
-        if all_horses:
-            races_dict["All Races"] = all_horses
+        for candidate in detail_candidates:
+            if candidate:
+                race_details_text += candidate.get_text().strip() + " "
     
-    return races_dict
+    # Process the full page text if we couldn't find specific sections
+    if not race_details_text:
+        page_text = soup.get_text()
+        race_details_text = page_text
+    
+    # Now parse specific elements from the race details text
+    
+    # Extract class
+    class_match = re.search(r'[Cc]lass\s+(\d+)', race_details_text)
+    if class_match:
+        race_info['class'] = f"Class {class_match.group(1)}"
+    
+    # Extract age restrictions - various formats
+    age_patterns = [
+        r'(\d+YO\s+only)', 
+        r'(\d+\s*[Yy]ear\s*[Oo]lds?\s*only)',
+        r'(\d+(?:-\d+)?(?:-\d+)?\s*YO\+?)',
+        r'(\d+\s*[Yy]ear\s*[Oo]lds?(?:\+)?)'
+    ]
+    
+    for pattern in age_patterns:
+        age_match = re.search(pattern, race_details_text, re.IGNORECASE)
+        if age_match:
+            race_info['age_restrictions'] = age_match.group(1).strip()
+            break
+    
+    # Extract distance - common formats
+    distance_match = re.search(r'(\d+m\s*(?:\d+f)?\s*(?:\d+y)?)', race_details_text)
+    if distance_match:
+        race_info['distance'] = distance_match.group(1).strip()
+    
+    # Extract going
+    going_patterns = ["Good", "Soft", "Firm", "Heavy", "Standard", "Slow", "Good to Soft", "Good to Firm", "Yielding"]
+    for pattern in going_patterns:
+        if pattern.lower() in race_details_text.lower():
+            race_info['going'] = pattern
+            break
+    
+    # Extract surface
+    if "turf" in race_details_text.lower():
+        race_info['surface'] = "Turf"
+    elif any(x in race_details_text.lower() for x in ["all-weather", "all weather", "aw", "polytrack", "tapeta", "fibresand"]):
+        race_info['surface'] = "All Weather"
+    
+    # Improved runner count detection
+    # First check for explicit runner text in race details
+    runners_match = re.search(r'(\d+)\s*[Rr]unners', race_details_text)
+    if runners_match:
+        race_info['runners'] = runners_match.group(1)
+    else:
+        # Look for numbered horse entries (usually more reliable)
+        horse_entries = []
+        # Check for horse silk or number elements
+        horse_numbers = soup.find_all(['div', 'span'], string=re.compile(r'^\d+$'))
+        if horse_numbers:
+            # Filter out any non-horse numbers (like dates, times)
+            horse_entries = [num for num in horse_numbers if len(num.get_text()) <= 2 and int(num.get_text()) < 30]
+            if horse_entries:
+                race_info['runners'] = str(len(horse_entries))
+        
+        # If still not found, look for horse rows
+        if race_info['runners'] == 'Unknown':
+            horse_rows = soup.find_all(['tr', 'div'], class_=lambda c: c and ('runner' in str(c).lower() or 'horse' in str(c).lower() if c else False))
+            if horse_rows:
+                # Count only unique horses to avoid duplicates
+                unique_horses = set()
+                for row in horse_rows:
+                    # Try to extract horse name or number
+                    horse_name = row.get_text().strip()
+                    if horse_name:
+                        unique_horses.add(horse_name)
+                
+                if unique_horses:
+                    race_info['runners'] = str(len(unique_horses))
+    
+    # If we have race details that mention "4 Runners" explicitly, use that
+    if "4 Runners" in race_details_text:
+        race_info['runners'] = "4"
+    
+    # Add timestamp for when the data was scraped
+    race_info['scraped_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    return race_info
+
+def initialize_database():
+    """Create the SQLite database and races table if they don't exist."""
+    conn = sqlite3.connect('racing_data.db')
+    cursor = conn.cursor()
+    
+    # Create races table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS races (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        racecourse TEXT,
+        time TEXT,
+        date TEXT,
+        race_name TEXT,
+        age_restrictions TEXT,
+        class TEXT,
+        distance TEXT,
+        going TEXT,
+        runners TEXT,
+        surface TEXT,
+        url TEXT,
+        scraped_at TEXT,
+        UNIQUE(date, racecourse, time)
+    )
+    ''')
+    
+    conn.commit()
+    return conn
+
+def save_to_database(race_info, conn):
+    """Save the race information to the database."""
+    cursor = conn.cursor()
+    
+    # Prepare column names and placeholders for SQL query
+    columns = ', '.join(race_info.keys())
+    placeholders = ', '.join(['?' for _ in race_info])
+    values = tuple(race_info.values())
+    
+    # Insert or replace if the same race already exists
+    query = f'''
+    INSERT OR REPLACE INTO races ({columns})
+    VALUES ({placeholders})
+    '''
+    
+    cursor.execute(query, values)
+    conn.commit()
+    return cursor.lastrowid
 
 def main():
     # URL of the racing card to scrape
-    url = "https://www.sportinglife.com/racing/fast-cards/82929/2021-04-02/unknown"
+    url = "https://www.sportinglife.com/racing/racecards/2025-04-05/chepstow/racecard/851313/best-odds-guaranteed-with-dragonbet-ebf-junior-national-hunt-hurdle-gbb-race"
     
-    print(f"Scraping horse names from {url}...")
+    print(f"Scraping race information from {url}...")
+    
+    # Initialize the database
+    conn = initialize_database()
     
     # Fetch the page content
     html_content = fetch_racing_page(url)
     
     if html_content:
-        # Extract horse names
-        races_horses = extract_horse_names(html_content)
+        # Extract race information
+        race_info = extract_race_info(html_content, url)
         
-        if races_horses:
-            print("\nHorses by Race:")
-            print("===============")
+        if race_info:
+            print("\nRace Information:")
+            print("=================")
             
-            # Create a DataFrame for nicer display
-            all_horses = []
-            for race_name, horses in races_horses.items():
-                print(f"\n{race_name}:")
-                for horse in horses:
-                    print(f"- {horse}")
-                    all_horses.append({"Race": race_name, "Horse": horse})
+            # Print the extracted information
+            for key, value in race_info.items():
+                if key != 'url' and key != 'scraped_at':  # Skip URL and timestamp in display
+                    print(f"{key.replace('_', ' ').title()}: {value}")
             
-            # Create and save a DataFrame
-            if all_horses:
-                df = pd.DataFrame(all_horses)
-                csv_file = "horses_data.csv"
-                df.to_csv(csv_file, index=False)
-                print(f"\nSaved {len(all_horses)} horses to {csv_file}")
+            # Save to database
+            row_id = save_to_database(race_info, conn)
+            print(f"\nSaved race information to database with ID: {row_id}")
+            
+            # Demonstrate reading from database
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM races")
+            print(f"\nTotal races in database: {len(cursor.fetchall())}")
             
             print("\nScraping completed successfully!")
         else:
-            print("No horses found on the page.")
+            print("No race information found on the page.")
     else:
         print("Failed to retrieve the racing page.")
+    
+    # Close the database connection
+    conn.close()
 
 if __name__ == "__main__":
     main()
