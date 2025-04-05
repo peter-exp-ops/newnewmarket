@@ -123,18 +123,18 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
         log(f"Error: Invalid data type '{data_type}'")
         return []
     
-    # Handle trainer URLs specially - generate direct numeric pattern for trainers
-    if data_type == 'trainers' and base_url.endswith('trainer/'):
+    # Handle URLs with numerical IDs (trainers, jockeys, horses)
+    if data_type in ['trainers', 'jockeys', 'horses'] and any(base_url.endswith(f"{data_type[:-1]}/") for ending in ['trainer/', 'jockey/', 'horse/']):
         # Clear the visit queue to use our optimized approach
         urls_to_visit = []
-        # Start with trainer ID 1 and increment
-        for trainer_id in range(1, max_urls + 1):
-            trainer_url = f"{base_url}{trainer_id}"
+        # Start with ID 1 and increment
+        for item_id in range(1, max_urls + 1):
+            item_url = f"{base_url}{item_id}"
             # Skip URLs that have already been successfully processed
-            if trainer_url in captured_urls and captured_urls[trainer_url] == 'success':
+            if item_url in captured_urls and captured_urls[item_url] == 'success':
                 continue
-            urls_to_visit.append(trainer_url)
-        log(f"Generated {len(urls_to_visit)} direct trainer URLs to check (excluding already captured)")
+            urls_to_visit.append(item_url)
+        log(f"Generated {len(urls_to_visit)} direct {data_type} URLs to check (excluding already captured)")
     
     excluded_patterns = exclude_patterns.get(data_type, [])
     log(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
@@ -206,8 +206,9 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 if len(discovered_urls) >= max_urls:
                     break
                 
-            # For specific data types, we might not need to parse the page for links
-            if data_type == 'trainers' and base_url.endswith('trainer/'):
+            # For specific data types using numerical IDs, we might not need to parse the page
+            if data_type in ['trainers', 'jockeys', 'horses'] and any(
+                base_url.endswith(ending) for ending in ['trainer/', 'jockey/', 'horse/']):
                 # Skip parsing for direct numeric traversal
                 continue
                 
@@ -736,8 +737,8 @@ class ScraperUI:
         
         default_urls = {
             "races": "https://www.sportinglife.com/racing/results/",
-            "horses": "https://www.sportinglife.com/racing/profiles/",
-            "jockeys": "https://www.sportinglife.com/racing/profiles/",
+            "horses": "https://www.sportinglife.com/racing/profiles/horse/",
+            "jockeys": "https://www.sportinglife.com/racing/profiles/jockey/",
             "trainers": "https://www.sportinglife.com/racing/profiles/trainer/"
         }
         
