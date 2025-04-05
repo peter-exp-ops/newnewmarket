@@ -152,7 +152,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
         for item_id in range(1, max_urls + 1):
             item_url = f"{base_url}{item_id}"
             # Skip URLs that have already been successfully processed
-            if item_url in captured_urls and captured_urls[item_url] == 'success':
+            if item_url in captured_urls and captured_urls[item_url] == 1:
                 continue
             urls_to_visit.append(item_url)
         log(f"Generated {len(urls_to_visit)} direct {data_type} URLs to check (excluding already captured)")
@@ -160,7 +160,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     excluded_patterns = exclude_patterns.get(data_type, [])
     log(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
     log(f"Excluding URLs containing: {excluded_patterns}")
-    log(f"Skipping {len([u for u, s in captured_urls.items() if s == 'success'])} URLs already successfully captured")
+    log(f"Skipping {len([u for u, s in captured_urls.items() if s == 1])} URLs already successfully captured")
     
     if data_type == 'races':
         log("For races, only including URLs with published results")
@@ -183,7 +183,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             continue
         
         # Skip if already successfully captured in database
-        if current_url in captured_urls and captured_urls[current_url] == 'success':
+        if current_url in captured_urls and captured_urls[current_url] == 1:
             skipped_count += 1
             continue
             
@@ -273,7 +273,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 href = href.rstrip('/')
                 
                 # Skip URLs already successfully captured
-                if href in captured_urls and captured_urls[href] == 'success':
+                if href in captured_urls and captured_urls[href] == 1:
                     continue
                 
                 # For race URLs, we need to check content before adding to discovered URLs
@@ -314,7 +314,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
         
     # Save discovered URLs to database if provided
     if conn and discovered_urls:
-        added_count = save_urls_to_database(conn, discovered_urls, 'new')
+        added_count = save_urls_to_database(conn, discovered_urls, 1)
         log(f"Added {added_count} new URLs to database")
         
     return discovered_urls
@@ -351,24 +351,24 @@ def get_captured_urls(conn):
         conn (sqlite3.Connection): Database connection
         
     Returns:
-        dict: Dictionary of URLs and their status {url: status}
+        dict: Dictionary of URLs and their success status {url: success}
     """
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT url, status FROM urls")
+        cursor.execute("SELECT url, success FROM urls")
         return {row[0]: row[1] for row in cursor.fetchall()}
     except Exception as e:
         print(f"Error fetching URLs from database: {str(e)}")
         return {}
 
-def save_urls_to_database(conn, urls, status='new'):
+def save_urls_to_database(conn, urls, success=0):
     """
     Save a list of URLs to the database
     
     Args:
         conn (sqlite3.Connection): Database connection
         urls (list): List of URLs to save
-        status (str): Status to set for the URLs
+        success (int): Success status to set for the URLs (1 for success, 0 for not processed/failed)
         
     Returns:
         int: Number of URLs added
@@ -383,8 +383,8 @@ def save_urls_to_database(conn, urls, status='new'):
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS urls (
             url TEXT PRIMARY KEY,
-            timestamp TIMESTAMP,
-            status TEXT,
+            date_accessed TIMESTAMP,
+            success BOOLEAN,
             type TEXT
         )
         ''')
@@ -393,9 +393,9 @@ def save_urls_to_database(conn, urls, status='new'):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # Use executemany for better performance
-        rows = [(url, timestamp, status, get_url_type(url)) for url in urls]
+        rows = [(url, timestamp, success, get_url_type(url)) for url in urls]
         cursor.executemany(
-            "INSERT OR IGNORE INTO urls (url, timestamp, status, type) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
             rows
         )
         
@@ -405,14 +405,14 @@ def save_urls_to_database(conn, urls, status='new'):
         print(f"Error saving URLs to database: {str(e)}")
         return 0
 
-def update_url_status(conn, url, status):
+def update_url_success(conn, url, success):
     """
-    Update the status of a URL in the database
+    Update the success status of a URL in the database
     
     Args:
         conn (sqlite3.Connection): Database connection
         url (str): URL to update
-        status (str): New status ('success', 'error', 'processing', etc.)
+        success (int): New success status (1 for success, 0 for failed)
         
     Returns:
         bool: True if successful, False otherwise
@@ -421,13 +421,13 @@ def update_url_status(conn, url, status):
         cursor = conn.cursor()
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute(
-            "UPDATE urls SET status = ?, timestamp = ? WHERE url = ?",
-            (status, timestamp, url)
+            "UPDATE urls SET success = ?, date_accessed = ? WHERE url = ?",
+            (success, timestamp, url)
         )
         conn.commit()
         return True
     except Exception as e:
-        print(f"Error updating URL status: {str(e)}")
+        print(f"Error updating URL success status: {str(e)}")
         return False
 
 def get_url_type(url):
