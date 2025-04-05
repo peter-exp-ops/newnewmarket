@@ -834,14 +834,10 @@ class ScraperUI:
         scraper_frame = ttk.LabelFrame(main_frame, text="Targeted Scraper", padding="10")
         scraper_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(scraper_frame, text="Limit:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        self.limit_var = tk.IntVar(value=10)
-        ttk.Spinbox(scraper_frame, from_=1, to=1000, textvariable=self.limit_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        
-        ttk.Button(scraper_frame, text="Scrape Discovered URLs", command=self.scrape_selected_type).grid(row=1, column=0, padx=5, pady=5)
+        ttk.Button(scraper_frame, text="Scrape Discovered URLs", command=self.scrape_selected_type).grid(row=0, column=0, padx=5, pady=5)
         
         self.scrape_stats_var = StringVar(value="Not started")
-        ttk.Label(scraper_frame, textvariable=self.scrape_stats_var).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(scraper_frame, textvariable=self.scrape_stats_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         
         # Progress section
         progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding="10")
@@ -956,7 +952,7 @@ class ScraperUI:
             self.stats_var.set("Error occurred")
     
     def scrape_selected_type(self):
-        """Scrape selected URL type up to the specified limit"""
+        """Scrape all discovered URLs of the selected type"""
         if self.conn is None:
             messagebox.showerror("Not Connected", "Please connect to the database first.")
             return
@@ -970,9 +966,7 @@ class ScraperUI:
             messagebox.showwarning("Type Selection", "Please select a specific data type to scrape in the crawler section.")
             return
             
-        limit = self.limit_var.get()
-        
-        self.log_message(f"Starting scrape of {limit} {data_type} URLs")
+        self.log_message(f"Starting scrape of all {len(self.discovered_urls)} discovered {data_type} URLs")
         self.progress_var.set(0)
         
         try:
@@ -981,15 +975,12 @@ class ScraperUI:
             self.root.update_idletasks()
             
             # Filter URLs by type - no need to filter again if already filtered during crawl
-            filtered_urls = self.discovered_urls
+            urls_to_scrape = self.discovered_urls
             
-            if not filtered_urls:
+            if not urls_to_scrape:
                 self.scrape_stats_var.set("No matching URLs")
                 self.log_message(f"No URLs found to scrape.")
                 return
-            
-            # Limit number of URLs to scrape
-            urls_to_scrape = filtered_urls[:limit]
             
             # Perform the actual scraping with progress updates
             self.log_message(f"Scraping {len(urls_to_scrape)} {data_type} URLs...")
@@ -1004,7 +995,7 @@ class ScraperUI:
             scraped_data = scrape_urls_by_type(
                 urls_to_scrape,
                 data_type,
-                limit,
+                len(urls_to_scrape),  # Use all discovered URLs
                 log_callback=self.log_message,
                 progress_callback=update_progress,
                 conn=self.conn
