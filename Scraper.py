@@ -19,6 +19,7 @@ import time
 import random
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog, StringVar
+import traceback
 
 # === Database Connection Functions ===
 
@@ -599,23 +600,38 @@ def scrape_horse_page(url):
             'owner': None
         }
         
-        # Look for details in the profile section
-        details_section = soup.find('div', class_='profile__details')
-        if details_section:
-            # Extract details from the table
-            detail_rows = details_section.find_all('tr')
-            for row in detail_rows:
-                cells = row.find_all('td')
-                if len(cells) >= 2:
-                    label = cells[0].text.strip().lower()
-                    value = cells[1].text.strip()
+        # Look for details in horse profile table
+        # Most horse profile pages have a table with key details
+        detail_tables = soup.find_all('table')
+        for table in detail_tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                cols = row.find_all(['td', 'th'])
+                if len(cols) >= 2:
+                    label = cols[0].text.strip().lower()
+                    value = cols[1].text.strip()
                     
-                    if 'foaled' in label or 'born' in label:
-                        horse_data['foaled'] = value
+                    if 'age' in label or 'foaled' in label:
+                        # Extract foaled date from format like "12 (Foaled 17th September 2013)"
+                        foaled_match = re.search(r'Foaled\s+(.+)\)', value)
+                        if foaled_match:
+                            horse_data['foaled'] = foaled_match.group(1).strip()
+                    elif 'trainer' in label:
+                        horse_data['trainer'] = value
+                        # Try to extract trainer ID from any links
+                        trainer_link = cols[1].find('a', href=True)
+                        if trainer_link and 'profiles/trainer' in trainer_link['href']:
+                            try:
+                                trainer_id = int(trainer_link['href'].split('/')[-1])
+                                horse_data['trainer_id'] = trainer_id
+                            except (ValueError, IndexError):
+                                pass
+                    elif 'sex' in label:
+                        horse_data['sex'] = value
                     elif 'sire' in label:
                         horse_data['sire'] = value
                         # Try to extract sire ID from any links
-                        sire_link = cells[1].find('a', href=True)
+                        sire_link = cols[1].find('a', href=True)
                         if sire_link and 'profiles/horse' in sire_link['href']:
                             try:
                                 sire_id = int(sire_link['href'].split('/')[-1])
@@ -625,7 +641,7 @@ def scrape_horse_page(url):
                     elif 'dam' in label:
                         horse_data['dam'] = value
                         # Try to extract dam ID from any links
-                        dam_link = cells[1].find('a', href=True)
+                        dam_link = cols[1].find('a', href=True)
                         if dam_link and 'profiles/horse' in dam_link['href']:
                             try:
                                 dam_id = int(dam_link['href'].split('/')[-1])
@@ -634,104 +650,71 @@ def scrape_horse_page(url):
                                 pass
                     elif 'owner' in label:
                         horse_data['owner'] = value
-                    elif 'sex' in label:
-                        horse_data['sex'] = value
-                    elif 'trainer' in label:
-                        horse_data['trainer'] = value
-                        # Try to extract trainer ID from any links
-                        trainer_link = cells[1].find('a', href=True)
-                        if trainer_link and 'profiles/trainer' in trainer_link['href']:
-                            try:
-                                trainer_id = int(trainer_link['href'].split('/')[-1])
-                                horse_data['trainer_id'] = trainer_id
-                            except (ValueError, IndexError):
-                                pass
         
-        # If we couldn't find details in the primary location, look for alternative sections
-        if not any([horse_data['foaled'], horse_data['sire'], horse_data['dam'], horse_data['owner'], horse_data['sex'], horse_data['trainer']]):
-            # Look for details in other parts of the page
-            info_sections = soup.find_all(['div', 'ul'], class_=['details-list', 'profile-info'])
-            for section in info_sections:
-                items = section.find_all(['li', 'div'], class_=['profile-info__item'])
-                if not items:  # If no items found with the class, try getting all list items
-                    items = section.find_all('li')
-                
-                for item in items:
-                    label_elem = item.find(['span', 'dt'], class_=['details-list__label', 'profile-info__label'])
-                    value_elem = item.find(['span', 'dd'], class_=['details-list__value', 'profile-info__value'])
-                    
-                    if label_elem and value_elem:
-                        label = label_elem.text.strip().lower()
+        # If we still don't have complete information, try alternative methods
+        if not any([horse_data['foaled'], horse_data['sex'], horse_data['trainer']]):
+            # Look for specific information in different page layouts
+            print(f"Using fallback methods to extract horse details for {horse_name}")
+            
+            # Try to find details in sections with dt/dd or label/value pairs
+            detail_sections = soup.find_all(['dl', 'div', 'ul'], class_=['details', 'info', 'profile'])
+            for section in detail_sections:
+                # Look for dt/dd pairs
+                terms = section.find_all('dt')
+                for term in terms:
+                    label = term.text.strip().lower()
+                    value_elem = term.find_next('dd')
+                    if value_elem:
                         value = value_elem.text.strip()
                         
-                        if 'foaled' in label or 'born' in label:
-                            horse_data['foaled'] = value
-                        elif 'sire' in label:
-                            horse_data['sire'] = value
-                            # Try to extract sire ID
-                            sire_link = value_elem.find('a', href=True)
-                            if sire_link and 'profiles/horse' in sire_link['href']:
-                                try:
-                                    sire_id = int(sire_link['href'].split('/')[-1])
-                                    horse_data['sire_id'] = sire_id
-                                except (ValueError, IndexError):
-                                    pass
-                        elif 'dam' in label:
-                            horse_data['dam'] = value
-                            # Try to extract dam ID
-                            dam_link = value_elem.find('a', href=True)
-                            if dam_link and 'profiles/horse' in dam_link['href']:
-                                try:
-                                    dam_id = int(dam_link['href'].split('/')[-1])
-                                    horse_data['dam_id'] = dam_id
-                                except (ValueError, IndexError):
-                                    pass
-                        elif 'owner' in label:
-                            horse_data['owner'] = value
-                        elif 'sex' in label:
-                            horse_data['sex'] = value
+                        if 'age' in label or 'foaled' in label:
+                            foaled_match = re.search(r'Foaled\s+(.+)\)', value)
+                            if foaled_match:
+                                horse_data['foaled'] = foaled_match.group(1).strip()
                         elif 'trainer' in label:
                             horse_data['trainer'] = value
-                            # Try to extract trainer ID
-                            trainer_link = value_elem.find('a', href=True)
-                            if trainer_link and 'profiles/trainer' in trainer_link['href']:
-                                try:
-                                    trainer_id = int(trainer_link['href'].split('/')[-1])
-                                    horse_data['trainer_id'] = trainer_id
-                                except (ValueError, IndexError):
-                                    pass
+                        elif 'sex' in label:
+                            horse_data['sex'] = value
+                        elif 'sire' in label:
+                            horse_data['sire'] = value
+                        elif 'dam' in label:
+                            horse_data['dam'] = value
+                        elif 'owner' in label:
+                            horse_data['owner'] = value
         
-        # As a last resort, search for these patterns in any text on the page
-        if not horse_data['trainer']:
-            trainer_patterns = [
-                r'Trainer[:\s]+([^,\n]+)',
-                r'Trained by[:\s]+([^,\n]+)'
-            ]
-            for pattern in trainer_patterns:
-                trainer_match = re.search(pattern, soup.get_text())
-                if trainer_match:
-                    horse_data['trainer'] = trainer_match.group(1).strip()
-                    break
+        # Check if we have at least some basic information
+        if not any([horse_data['foaled'], horse_data['sex'], horse_data['trainer'], horse_data['sire'], horse_data['dam']]):
+            print(f"Warning: Unable to extract complete horse data for {horse_name}")
+            
+            # Last resort: scan the entire HTML for any mention of the critical fields
+            html_text = soup.get_text()
+            
+            # Look for Age/Foaled pattern (common format)
+            age_pattern = r'Age\s*\d+\s*\(Foaled\s+([^)]+)\)'
+            age_match = re.search(age_pattern, html_text)
+            if age_match:
+                horse_data['foaled'] = age_match.group(1).strip()
+            
+            # Look for common field patterns
+            field_patterns = {
+                'sex': r'Sex\s*[:]\s*([^\n]+)',
+                'trainer': r'Trainer\s*[:]\s*([^\n]+)',
+                'sire': r'Sire\s*[:]\s*([^\n]+)',
+                'dam': r'Dam\s*[:]\s*([^\n]+)',
+                'owner': r'Owner\s*[:]\s*([^\n]+)',
+            }
+            
+            for field, pattern in field_patterns.items():
+                match = re.search(pattern, html_text)
+                if match and not horse_data[field]:
+                    horse_data[field] = match.group(1).strip()
         
-        if not horse_data['sex']:
-            sex_patterns = [
-                r'Sex[:\s]+([^,\n]+)',
-                r'Gender[:\s]+([^,\n]+)'
-            ]
-            for pattern in sex_patterns:
-                sex_match = re.search(pattern, soup.get_text())
-                if sex_match:
-                    horse_data['sex'] = sex_match.group(1).strip()
-                    break
-        
-        # Check if we found any meaningful data beyond ID and name
-        if not any([horse_data['foaled'], horse_data['sire'], horse_data['dam'], horse_data['owner'], horse_data['sex'], horse_data['trainer']]):
-            print(f"Warning: Limited horse data found for {horse_name} at {url}")
-        
+        print(f"Extracted horse data: {horse_data}")
         return horse_data
         
     except Exception as e:
         print(f"Error scraping horse page {url}: {str(e)}")
+        traceback.print_exc()
         return None
 
 def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callback=None, conn=None):
@@ -967,6 +950,12 @@ def save_data_to_database(conn, data, data_type):
                     cursor.execute("ALTER TABLE horses ADD COLUMN SireID INTEGER")
                 if 'damid' not in existing_columns:
                     cursor.execute("ALTER TABLE horses ADD COLUMN DamID INTEGER")
+                if 'sire' not in existing_columns:
+                    cursor.execute("ALTER TABLE horses ADD COLUMN Sire TEXT")
+                if 'dam' not in existing_columns:
+                    cursor.execute("ALTER TABLE horses ADD COLUMN Dam TEXT")
+                if 'trainer' not in existing_columns:
+                    cursor.execute("ALTER TABLE horses ADD COLUMN Trainer TEXT")
                 
                 conn.commit()
             except Exception as e:
@@ -975,29 +964,37 @@ def save_data_to_database(conn, data, data_type):
             # Save horse data to the horses table
             for horse in data:
                 try:
+                    # Print debug info
+                    print(f"Attempting to save horse: {horse['id']} - {horse['name']}")
+                    
                     cursor.execute(
                         """
                         INSERT OR REPLACE INTO horses 
-                        (ID, Name, Foaled, Sex, TrainerID, Sire, SireID, Dam, DamID, Owner) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (ID, Name, Foaled, Sex, Trainer, TrainerID, Sire, SireID, Dam, DamID, Owner) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             horse['id'], 
                             horse['name'], 
-                            horse['foaled'],
-                            horse['sex'],
-                            horse['trainer_id'],
-                            horse['sire'], 
-                            horse['sire_id'],
-                            horse['dam'], 
-                            horse['dam_id'],
-                            horse['owner']
+                            horse.get('foaled'),
+                            horse.get('sex'),
+                            horse.get('trainer'),
+                            horse.get('trainer_id'),
+                            horse.get('sire'), 
+                            horse.get('sire_id'),
+                            horse.get('dam'), 
+                            horse.get('dam_id'),
+                            horse.get('owner')
                         )
                     )
                     if cursor.rowcount > 0:
                         records_saved += 1
+                        print(f"Successfully saved horse: {horse['name']}")
+                    else:
+                        print(f"No rows affected when saving horse: {horse['name']}")
                 except Exception as e:
                     print(f"Error saving horse {horse['name']}: {str(e)}")
+                    print(f"Horse data: {horse}")
         # Add other data types here when implemented
         # elif data_type == 'races':
         #    ...
