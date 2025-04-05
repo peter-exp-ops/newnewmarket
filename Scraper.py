@@ -118,6 +118,27 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
         'races': []
     }
     
+    # Function to check if a race page has published results
+    def has_published_results(html_content):
+        """Check if the race page contains published results"""
+        if not html_content or data_type != 'races':
+            return True  # Not a race page or no content, skip this check
+            
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Look for result indicators
+        result_indicators = [
+            # Table with race results
+            soup.find('table', class_='ui-table'),
+            # "Result" text
+            soup.find(string=re.compile(r'Result', re.IGNORECASE)),
+            # Winner details
+            soup.find(string=re.compile(r'Winner', re.IGNORECASE))
+        ]
+        
+        # Check if we found any result indicators
+        return any(indicator is not None for indicator in result_indicators)
+    
     active_pattern = url_patterns.get(data_type)
     if not active_pattern:
         log(f"Error: Invalid data type '{data_type}'")
@@ -141,10 +162,14 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     log(f"Excluding URLs containing: {excluded_patterns}")
     log(f"Skipping {len([u for u, s in captured_urls.items() if s == 'success'])} URLs already successfully captured")
     
+    if data_type == 'races':
+        log("For races, only including URLs with published results")
+    
     # Summary statistics
     total_to_check = min(max_urls * 5, len(urls_to_visit) if urls_to_visit else 5000)  # Estimate
     pages_checked = 0
     skipped_count = 0
+    skipped_no_results = 0
     last_summary_time = time.time()
     summary_interval = 2  # seconds
     match_count = 0
@@ -175,7 +200,12 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
         # Show periodic summary instead of per-URL logging
         current_time = time.time()
         if current_time - last_summary_time >= summary_interval:
-            log(f"Progress: Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs, skipped {skipped_count} already captured, {len(urls_to_visit)} remaining in queue")
+            summary_msg = (f"Progress: Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs, "
+                          f"skipped {skipped_count} already captured")
+            if data_type == 'races':
+                summary_msg += f", skipped {skipped_no_results} without results"
+            summary_msg += f", {len(urls_to_visit)} remaining in queue"
+            log(summary_msg)
             last_summary_time = current_time
         
         try:
@@ -192,6 +222,12 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             if response.status_code != 200:
                 # Not logging every failed URL
                 continue
+            
+            # For race URLs, check if results are published
+            if data_type == 'races' and re.match(active_pattern, current_url):
+                if not has_published_results(response.text):
+                    skipped_no_results += 1
+                    continue  # Skip races without published results
                 
             # Check if URL matches the pattern
             if re.match(active_pattern, current_url) and current_url not in discovered_urls:
@@ -240,11 +276,17 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 if href in captured_urls and captured_urls[href] == 'success':
                     continue
                 
+                # For race URLs, we need to check content before adding to discovered URLs
+                # but since we haven't visited the URL yet, we'll add it to urls_to_visit
+                # and let the main loop check if it has published results
+                
                 # Check if URL matches the pattern for the desired type
                 if re.match(active_pattern, href) and href not in discovered_urls:
-                    discovered_urls.append(href)
-                    match_count += 1
-                    # Not logging every match to reduce verbosity
+                    if data_type != 'races':
+                        # For non-race URLs, add directly to discovered_urls
+                        discovered_urls.append(href)
+                        match_count += 1
+                    # For race URLs, we'll check when we visit the page
                     
                     # If we've reached max_urls, stop
                     if len(discovered_urls) >= max_urls:
@@ -265,6 +307,8 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     # Final summary
     log(f"Crawl complete. Found {len(discovered_urls)} matching {data_type} URLs after checking {pages_checked} pages")
     log(f"Skipped {skipped_count} URLs already successfully captured")
+    if data_type == 'races':
+        log(f"Skipped {skipped_no_results} race pages without published results")
     if len(discovered_urls) >= max_urls:
         log(f"Reached maximum URL limit of {max_urls}")
         
