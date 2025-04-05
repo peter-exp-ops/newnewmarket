@@ -488,7 +488,77 @@ def analyze_url_coverage(all_urls, captured_urls):
 
 # === Scraping Functions ===
 
-def scrape_urls_by_type(urls, url_type, limit):
+def scrape_trainer_page(url):
+    """
+    Scrape a trainer profile page to extract trainer information
+    
+    Args:
+        url (str): URL of the trainer profile page
+        
+    Returns:
+        dict: Extracted trainer data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract trainer ID from URL
+        trainer_id = int(url.split('/')[-1])
+        
+        # Extract trainer name from the page header
+        trainer_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not trainer_name:
+            print(f"Could not find trainer name at URL: {url}")
+            return None
+            
+        return {
+            'id': trainer_id,
+            'name': trainer_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping trainer page {url}: {str(e)}")
+        return None
+
+def scrape_jockey_page(url):
+    """
+    Scrape a jockey profile page to extract jockey information
+    
+    Args:
+        url (str): URL of the jockey profile page
+        
+    Returns:
+        dict: Extracted jockey data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract jockey ID from URL
+        jockey_id = int(url.split('/')[-1])
+        
+        # Extract jockey name from the page header
+        jockey_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not jockey_name:
+            print(f"Could not find jockey name at URL: {url}")
+            return None
+            
+        return {
+            'id': jockey_id,
+            'name': jockey_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping jockey page {url}: {str(e)}")
+        return None
+
+def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callback=None, conn=None):
     """
     Scrape a limited number of URLs of a specific type
     
@@ -496,11 +566,118 @@ def scrape_urls_by_type(urls, url_type, limit):
         urls (list): List of URLs to scrape
         url_type (str): Type of URLs to scrape ('races', 'horses', 'jockeys', 'trainers')
         limit (int): Maximum number of URLs to scrape
+        log_callback (callable): Optional callback function to log messages in real-time
+        progress_callback (callable): Optional callback function to update progress
+        conn (sqlite3.Connection): Database connection to record URL status
         
     Returns:
         list: Scraped data
     """
-    pass
+    if not urls:
+        return []
+        
+    # Limit the number of URLs to scrape
+    urls_to_scrape = urls[:limit]
+    
+    # Initialize list to store scraped data
+    scraped_data = []
+    
+    # Log function (use callback if provided, otherwise print)
+    def log(message):
+        if log_callback:
+            log_callback(message)
+        else:
+            print(message)
+    
+    # Update progress if callback provided
+    def update_progress(current, total):
+        if progress_callback:
+            percent = min(100, int((current / total) * 100))
+            progress_callback(percent)
+            
+    log(f"Starting scraping of {len(urls_to_scrape)} {url_type} URLs")
+    
+    for i, url in enumerate(urls_to_scrape):
+        try:
+            # Update progress
+            update_progress(i, len(urls_to_scrape))
+            
+            success = False
+            data = None
+            
+            # Scrape based on URL type
+            if url_type == 'trainers':
+                log(f"Scraping trainer data from: {url}")
+                data = scrape_trainer_page(url)
+            elif url_type == 'jockeys':
+                log(f"Scraping jockey data from: {url}")
+                data = scrape_jockey_page(url)
+            # Add other types here when implemented
+            # elif url_type == 'horses':
+            #     data = scrape_horse_page(url)
+            # elif url_type == 'races':
+            #     data = scrape_race_page(url)
+            
+            if data:
+                scraped_data.append(data)
+                success = True
+                log(f"Successfully scraped {url_type} data: {data['name']}")
+            else:
+                log(f"Failed to scrape data from {url}")
+                
+            # Record URL in database regardless of success
+            if conn:
+                # Get current timestamp
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor = conn.cursor()
+                
+                # Check if URL already exists in the database
+                cursor.execute("SELECT url FROM urls WHERE url = ?", (url,))
+                if cursor.fetchone():
+                    # Update existing URL
+                    log(f"Updating existing URL record: {url}")
+                    cursor.execute(
+                        "UPDATE urls SET date_accessed = ?, success = ?, type = ? WHERE url = ?",
+                        (timestamp, 1 if success else 0, url_type, url)
+                    )
+                else:
+                    # Insert new URL
+                    log(f"Adding new URL record: {url}")
+                    cursor.execute(
+                        "INSERT INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
+                        (url, timestamp, 1 if success else 0, url_type)
+                    )
+                conn.commit()
+                
+        except Exception as e:
+            log(f"Error processing {url}: {str(e)}")
+            if conn:
+                try:
+                    # Record error in URL table
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cursor = conn.cursor()
+                    
+                    # Check if URL already exists
+                    cursor.execute("SELECT url FROM urls WHERE url = ?", (url,))
+                    if cursor.fetchone():
+                        cursor.execute(
+                            "UPDATE urls SET date_accessed = ?, success = ?, type = ? WHERE url = ?",
+                            (timestamp, 0, url_type, url)
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
+                            (url, timestamp, 0, url_type)
+                        )
+                    conn.commit()
+                except Exception as db_error:
+                    log(f"Error recording URL failure in database: {str(db_error)}")
+    
+    # Final progress update
+    update_progress(len(urls_to_scrape), len(urls_to_scrape))
+    
+    log(f"Scraping complete. Scraped {len(scraped_data)} {url_type} URLs successfully.")
+    return scraped_data
 
 def process_scraped_data(data, data_type):
     """
@@ -513,7 +690,32 @@ def process_scraped_data(data, data_type):
     Returns:
         list: Processed data ready for database insertion
     """
-    pass
+    if not data:
+        return []
+        
+    processed_data = []
+    
+    if data_type == 'trainers':
+        # For trainers, we just need to format the data correctly
+        for trainer in data:
+            processed_data.append({
+                'id': trainer['id'],
+                'name': trainer['name']
+            })
+    elif data_type == 'jockeys':
+        # For jockeys, we also just need to format the data correctly
+        for jockey in data:
+            processed_data.append({
+                'id': jockey['id'],
+                'name': jockey['name']
+            })
+    # Add other data types here when implemented
+    # elif data_type == 'horses':
+    #    ...
+    # elif data_type == 'races':
+    #    ...
+    
+    return processed_data
 
 def save_data_to_database(conn, data, data_type):
     """
@@ -527,7 +729,50 @@ def save_data_to_database(conn, data, data_type):
     Returns:
         int: Number of records saved
     """
-    pass
+    if not data or not conn:
+        return 0
+        
+    cursor = conn.cursor()
+    records_saved = 0
+    
+    try:
+        if data_type == 'trainers':
+            # Save trainer data to the trainers table
+            for trainer in data:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO trainers (ID, Name) VALUES (?, ?)",
+                        (trainer['id'], trainer['name'])
+                    )
+                    if cursor.rowcount > 0:
+                        records_saved += 1
+                except Exception as e:
+                    print(f"Error saving trainer {trainer['name']}: {str(e)}")
+        elif data_type == 'jockeys':
+            # Save jockey data to the jockeys table
+            for jockey in data:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO jockeys (ID, Name) VALUES (?, ?)",
+                        (jockey['id'], jockey['name'])
+                    )
+                    if cursor.rowcount > 0:
+                        records_saved += 1
+                except Exception as e:
+                    print(f"Error saving jockey {jockey['name']}: {str(e)}")
+        # Add other data types here when implemented
+        # elif data_type == 'horses':
+        #    ...
+        # elif data_type == 'races':
+        #    ...
+        
+        # Commit the changes
+        conn.commit()
+        return records_saved
+    except Exception as e:
+        print(f"Error saving {data_type} data: {str(e)}")
+        conn.rollback()
+        return 0
 
 # === UI Class ===
 
@@ -717,7 +962,7 @@ class ScraperUI:
             return
         
         if not self.discovered_urls:
-            messagebox.showwarning("No URLs", "Please crawl the website first to discover URLs.")
+            messagebox.showwarning("No URLs", "Please crawl the website first to discover URLs or load URLs from database.")
             return
         
         data_type = self.data_type_var.get()
@@ -746,21 +991,44 @@ class ScraperUI:
             # Limit number of URLs to scrape
             urls_to_scrape = filtered_urls[:limit]
             
-            # Placeholder for actual implementation
-            self.log_message(f"This is a placeholder. Actual scraping of {len(urls_to_scrape)} {data_type} URLs would happen here.")
+            # Perform the actual scraping with progress updates
+            self.log_message(f"Scraping {len(urls_to_scrape)} {data_type} URLs...")
             
-            # Simulate scraping with progress updates
-            for i in range(len(urls_to_scrape)):
-                # Update progress
-                self.progress_var.set((i + 1) / len(urls_to_scrape) * 100)
+            # Function to update progress bar during scraping
+            def update_progress(percent):
+                self.progress_var.set(percent)
                 self.root.update_idletasks()
-                
-                # Simulate processing delay
-                time.sleep(0.5)
             
-            # Update statistics
-            self.scrape_stats_var.set(f"Scraped: {len(urls_to_scrape)} {data_type}")
-            self.log_message(f"Scrape complete. Processed {len(urls_to_scrape)} {data_type} URLs.")
+            # Start the scraping with callbacks for logging and progress updates
+            start_time = time.time()
+            scraped_data = scrape_urls_by_type(
+                urls_to_scrape,
+                data_type,
+                limit,
+                log_callback=self.log_message,
+                progress_callback=update_progress,
+                conn=self.conn
+            )
+            scrape_time = time.time() - start_time
+            
+            if scraped_data:
+                # Process the scraped data
+                self.log_message(f"Processing {len(scraped_data)} {data_type} records...")
+                processed_data = process_scraped_data(scraped_data, data_type)
+                
+                # Save the processed data to the database
+                self.log_message(f"Saving {len(processed_data)} {data_type} records to database...")
+                saved_count = save_data_to_database(self.conn, processed_data, data_type)
+                
+                # Update UI with results
+                self.scrape_stats_var.set(f"Scraped: {len(scraped_data)}, Saved: {saved_count}")
+                self.log_message(f"Scrape complete in {scrape_time:.1f} seconds. Saved {saved_count} {data_type} records to database.")
+            else:
+                self.scrape_stats_var.set("No data scraped")
+                self.log_message(f"No {data_type} data was successfully scraped.")
+            
+            # Set final progress
+            self.progress_var.set(100)
             
         except Exception as e:
             self.scrape_stats_var.set("Error")
