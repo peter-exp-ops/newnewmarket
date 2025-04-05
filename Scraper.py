@@ -1037,6 +1037,51 @@ class ScraperUI:
         ttk.Label(conn_frame, textvariable=self.status_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         ttk.Button(conn_frame, text="Connect to Database", command=self.connect_to_db).grid(row=0, column=2, padx=5, pady=5)
         
+        # URL Search section
+        url_search_frame = ttk.LabelFrame(main_frame, text="URL Search", padding="10")
+        url_search_frame.pack(fill=tk.X, pady=5)
+        
+        # Create estimate variables
+        self.horses_estimate_var = StringVar(value="Unknown")
+        self.trainers_estimate_var = StringVar(value="Unknown")
+        self.races_estimate_var = StringVar(value="Unknown")
+        
+        # Create database count variables
+        self.horses_db_count_var = StringVar(value="0")
+        self.trainers_db_count_var = StringVar(value="0")
+        self.races_db_count_var = StringVar(value="0")
+        
+        # Row labels
+        ttk.Label(url_search_frame, text="Type").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, text="Estimated URLs").grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, text="In Database").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, text="Actions").grid(row=0, column=3, sticky=tk.W, padx=5, pady=5)
+        
+        # Horses row
+        ttk.Label(url_search_frame, text="Horses:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.horses_estimate_var).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.horses_db_count_var).grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(url_search_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('horses')).grid(row=1, column=3, padx=5, pady=5)
+        
+        # Trainers row
+        ttk.Label(url_search_frame, text="Trainers:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.trainers_estimate_var).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.trainers_db_count_var).grid(row=2, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(url_search_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('trainers')).grid(row=2, column=3, padx=5, pady=5)
+        
+        # Races row
+        ttk.Label(url_search_frame, text="Races:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.races_estimate_var).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(url_search_frame, textvariable=self.races_db_count_var).grid(row=3, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(url_search_frame, text="Estimate", 
+                  command=lambda: self.estimate_url_count('races')).grid(row=3, column=3, padx=5, pady=5)
+        
+        # Refresh counts button
+        ttk.Button(url_search_frame, text="Refresh Database Counts", 
+                  command=self.update_db_counts).grid(row=4, column=0, columnspan=4, padx=5, pady=5)
+        
         # Crawler section
         crawler_frame = ttk.LabelFrame(main_frame, text="URL Crawler", padding="10")
         crawler_frame.pack(fill=tk.X, pady=5)
@@ -1115,6 +1160,8 @@ class ScraperUI:
             if check_database_structure():
                 self.status_var.set("Connected")
                 self.log_message("Successfully connected to the database.")
+                # Update the database counts
+                self.update_db_counts()
             else:
                 self.status_var.set("Connected (incomplete schema)")
                 self.log_message("Connected to database but schema is incomplete. Please initialize the database first.")
@@ -1280,6 +1327,195 @@ class ScraperUI:
         
         self.base_url_var.set(default_urls.get(data_type, "https://www.sportinglife.com/racing/"))
         self.log_message(f"Updated base URL for {data_type} data type")
+        
+    def estimate_url_count(self, url_type):
+        """
+        Estimate the upper bound of valid URLs for a given type
+        using a binary search approach
+        
+        Args:
+            url_type (str): Type of URLs to estimate ('races', 'horses', 'trainers')
+        """
+        if url_type not in ['horses', 'trainers', 'races']:
+            messagebox.showerror("Invalid Type", f"URL type '{url_type}' is not supported for estimation.")
+            return
+            
+        self.log_message(f"Starting URL count estimation for {url_type}...")
+        
+        # Set variable to "Estimating..." during the search
+        if url_type == 'horses':
+            self.horses_estimate_var.set("Estimating...")
+        elif url_type == 'trainers':
+            self.trainers_estimate_var.set("Estimating...")
+        elif url_type == 'races':
+            self.races_estimate_var.set("Estimating...")
+        
+        self.root.update_idletasks()
+        
+        # Define base URLs for each type
+        base_urls = {
+            "horses": "https://www.sportinglife.com/racing/profiles/horse/",
+            "trainers": "https://www.sportinglife.com/racing/profiles/trainer/",
+            # For races, we'll use a different approach
+            "races": "https://www.sportinglife.com/racing/results/"
+        }
+        
+        base_url = base_urls.get(url_type)
+        
+        try:
+            if url_type in ['horses', 'trainers']:
+                # These have numerical IDs, so we can use binary search
+                self.log_message(f"Performing binary search to find maximum valid {url_type} ID...")
+                
+                # Starting binary search parameters
+                low = 1  # Start with ID 1
+                high = 1000000  # Initial high guess
+                last_valid = 0
+                
+                # First check if the high value is valid - if it is, we need a higher initial range
+                response = requests.head(f"{base_url}{high}", 
+                                        headers={'User-Agent': 'Mozilla/5.0'}, 
+                                        allow_redirects=True)
+                if response.status_code == 200:
+                    # If high guess is valid, we need to increase our range
+                    while response.status_code == 200:
+                        last_valid = high
+                        high *= 2
+                        self.log_message(f"Initial high value {last_valid} is valid, trying {high}...")
+                        response = requests.head(f"{base_url}{high}", 
+                                                headers={'User-Agent': 'Mozilla/5.0'}, 
+                                                allow_redirects=True)
+                
+                # Perform binary search
+                while low <= high:
+                    mid = (low + high) // 2
+                    
+                    # Add a small delay to avoid overwhelming the server
+                    time.sleep(0.2)
+                    
+                    # Check if mid is valid
+                    response = requests.head(f"{base_url}{mid}", 
+                                           headers={'User-Agent': 'Mozilla/5.0'}, 
+                                           allow_redirects=True)
+                    
+                    # Update UI periodically
+                    if (mid % 1000 == 0) or (high - low < 100):
+                        self.log_message(f"Testing {url_type} ID: {mid} (range: {low}-{high})")
+                        self.root.update_idletasks()
+                    
+                    # If valid, try higher
+                    if response.status_code == 200:
+                        last_valid = mid
+                        low = mid + 1
+                    # If invalid, try lower
+                    else:
+                        high = mid - 1
+                
+                # After search, last_valid contains our estimate
+                estimate = last_valid
+                self.log_message(f"Estimated upper bound for {url_type} IDs: approximately {estimate}")
+                
+                # Update the appropriate variable
+                if url_type == 'horses':
+                    self.horses_estimate_var.set(f"~{estimate:,}")
+                elif url_type == 'trainers':
+                    self.trainers_estimate_var.set(f"~{estimate:,}")
+                
+            elif url_type == 'races':
+                # For races, we'll try a different approach - count races per month over last 5 years
+                self.log_message("Estimating race count by sampling months...")
+                
+                # Get the current date
+                now = datetime.now()
+                total_count = 0
+                samples = 0
+                
+                # Go back 5 years, sample 1 month from each quarter
+                for year in range(now.year - 5, now.year + 1):
+                    for month in [1, 4, 7, 10]:  # January, April, July, October
+                        # Skip future months
+                        if year == now.year and month > now.month:
+                            continue
+                            
+                        # Format the URL for the month
+                        month_url = f"{base_url}{year}/{month:02d}"
+                        self.log_message(f"Sampling races from {year}-{month:02d}...")
+                        
+                        try:
+                            # Get the content of the monthly page
+                            response = requests.get(month_url, 
+                                                  headers={'User-Agent': 'Mozilla/5.0'})
+                            if response.status_code == 200:
+                                soup = BeautifulSoup(response.text, 'html.parser')
+                                
+                                # Find all race links
+                                race_links = soup.find_all('a', href=re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/'))
+                                month_count = len(set(link['href'] for link in race_links))
+                                
+                                self.log_message(f"Found {month_count} races in {year}-{month:02d}")
+                                total_count += month_count
+                                samples += 1
+                            else:
+                                self.log_message(f"Could not access {month_url}, status: {response.status_code}")
+                        except Exception as e:
+                            self.log_message(f"Error sampling month {year}-{month:02d}: {str(e)}")
+                        
+                        # Short delay between requests
+                        time.sleep(0.5)
+                
+                # Calculate estimate based on average per month * 12 months * 5 years
+                if samples > 0:
+                    avg_per_month = total_count / samples
+                    total_estimate = int(avg_per_month * 12 * 5)  # Estimate for 5 years
+                    self.log_message(f"Estimated race count: ~{total_estimate:,} (based on {samples} sample months)")
+                    self.races_estimate_var.set(f"~{total_estimate:,}")
+                else:
+                    self.log_message("Could not estimate race count, no valid samples found")
+                    self.races_estimate_var.set("Unknown")
+                
+        except Exception as e:
+            self.log_message(f"Error estimating {url_type} count: {str(e)}")
+            # Reset the variable on error
+            if url_type == 'horses':
+                self.horses_estimate_var.set("Error")
+            elif url_type == 'trainers':
+                self.trainers_estimate_var.set("Error")
+            elif url_type == 'races':
+                self.races_estimate_var.set("Error")
+            
+            messagebox.showerror("Estimation Error", f"Failed to estimate {url_type} count: {str(e)}")
+    
+    def update_db_counts(self):
+        """Update database count displays for all data types"""
+        if self.conn is None:
+            messagebox.showerror("Not Connected", "Please connect to the database first.")
+            return
+            
+        self.log_message("Updating database counts...")
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # Count horses
+            cursor.execute("SELECT COUNT(*) FROM horses")
+            horse_count = cursor.fetchone()[0]
+            self.horses_db_count_var.set(f"{horse_count:,}")
+            
+            # Count trainers
+            cursor.execute("SELECT COUNT(*) FROM trainers")
+            trainer_count = cursor.fetchone()[0]
+            self.trainers_db_count_var.set(f"{trainer_count:,}")
+            
+            # Count races
+            cursor.execute("SELECT COUNT(*) FROM races")
+            race_count = cursor.fetchone()[0]
+            self.races_db_count_var.set(f"{race_count:,}")
+            
+            self.log_message(f"Database counts updated: {horse_count} horses, {trainer_count} trainers, {race_count} races")
+            
+        except Exception as e:
+            self.log_message(f"Error updating database counts: {str(e)}")
+            messagebox.showerror("Count Error", f"Failed to update database counts: {str(e)}")
 
 # === Main Entry Point ===
 
