@@ -65,7 +65,7 @@ def check_database_structure():
 
 # === Crawling Functions ===
 
-def crawl_website(base_url, max_urls=1000, data_type=None):
+def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None):
     """
     Crawl a website to find all sub-URLs to any depth
     
@@ -73,6 +73,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         base_url (str): The URL to start crawling from
         max_urls (int): Maximum number of URLs to collect
         data_type (str): Type of URLs to look for ('races', 'horses', 'jockeys', 'trainers')
+        log_callback (callable): Optional callback function to log messages in real-time
         
     Returns:
         list: List of discovered URLs
@@ -80,6 +81,13 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
     discovered_urls = []
     visited_urls = set()
     urls_to_visit = [base_url]
+    
+    # Log function (use callback if provided, otherwise print)
+    def log(message):
+        if log_callback:
+            log_callback(message)
+        else:
+            print(message)
     
     # URL patterns to match for different types
     url_patterns = {
@@ -99,7 +107,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
     
     active_pattern = url_patterns.get(data_type)
     if not active_pattern:
-        print(f"Error: Invalid data type '{data_type}'")
+        log(f"Error: Invalid data type '{data_type}'")
         return []
     
     # Handle trainer URLs specially - generate direct numeric pattern for trainers
@@ -109,11 +117,11 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         # Start with trainer ID 1 and increment
         for trainer_id in range(1, max_urls + 1):
             urls_to_visit.append(f"{base_url}{trainer_id}")
-        print(f"Generated {len(urls_to_visit)} direct trainer URLs to check")
+        log(f"Generated {len(urls_to_visit)} direct trainer URLs to check")
     
     excluded_patterns = exclude_patterns.get(data_type, [])
-    print(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
-    print(f"Excluding URLs containing: {excluded_patterns}")
+    log(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
+    log(f"Excluding URLs containing: {excluded_patterns}")
     
     # Counter for logging
     pages_checked = 0
@@ -133,9 +141,9 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         visited_urls.add(current_url)
         pages_checked += 1
         
-        # Print progress every 10 pages
-        if pages_checked % 10 == 0:
-            print(f"Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs so far")
+        # Print progress every 5 pages
+        if pages_checked % 5 == 0:
+            log(f"Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs so far")
         
         try:
             # Add some delay to avoid overwhelming the server
@@ -149,13 +157,13 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
             
             # Skip pages that don't exist (404) or other errors
             if response.status_code != 200:
-                print(f"Skipping {current_url}: {response.status_code}")
+                log(f"Skipping {current_url}: {response.status_code}")
                 continue
                 
             # Check if URL matches the pattern
             if re.match(active_pattern, current_url) and current_url not in discovered_urls:
                 discovered_urls.append(current_url)
-                print(f"Found matching {data_type} URL: {current_url}")
+                log(f"Found matching {data_type} URL: {current_url}")
                 
                 # If we've reached max_urls, stop
                 if len(discovered_urls) >= max_urls:
@@ -193,7 +201,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
                 # Check if URL matches the pattern for the desired type
                 if re.match(active_pattern, href) and href not in discovered_urls:
                     discovered_urls.append(href)
-                    print(f"Found matching {data_type} URL: {href}")
+                    log(f"Found matching {data_type} URL: {href}")
                     
                     # If we've reached max_urls, stop
                     if len(discovered_urls) >= max_urls:
@@ -204,11 +212,11 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
                     urls_to_visit.append(href)
             
         except Exception as e:
-            print(f"Error processing {current_url}: {str(e)}")
+            log(f"Error processing {current_url}: {str(e)}")
     
-    print(f"Crawl complete. Found {len(discovered_urls)} matching URLs after checking {pages_checked} pages")
+    log(f"Crawl complete. Found {len(discovered_urls)} matching URLs after checking {pages_checked} pages")
     if len(discovered_urls) >= max_urls:
-        print(f"Reached maximum URL limit of {max_urls}")
+        log(f"Reached maximum URL limit of {max_urls}")
         
     return discovered_urls
 
@@ -476,9 +484,14 @@ class ScraperUI:
             self.captured_urls = get_captured_urls(self.conn)
             self.log_message(f"Found {len(self.captured_urls)} URLs already in database")
             
-            # Start the crawl
+            # Start the crawl with a callback to update the log in real-time
             self.log_message("Beginning web crawl...")
-            self.discovered_urls = crawl_website(base_url, max_urls, data_type)
+            self.discovered_urls = crawl_website(
+                base_url, 
+                max_urls, 
+                data_type, 
+                log_callback=self.log_message
+            )
             
             # Update progress
             self.progress_var.set(50)
@@ -575,8 +588,8 @@ class ScraperUI:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.log_text.see(tk.END)  # Scroll to the end
-        # Also update the UI
-        self.root.update_idletasks()
+        # Update the UI immediately to show the new log entry
+        self.root.update()  # Forces an immediate update of the UI
 
     def update_default_url(self, event=None):
         """Update the default URL based on the selected data type"""
