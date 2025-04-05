@@ -83,32 +83,37 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
     
     # URL patterns to match for different types
     url_patterns = {
-        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+',
-        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+',
+        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+$',
+        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+$',
         'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
+        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+$'
     }
     
-    # Prioritized link patterns - URLs containing these are more likely to lead to valuable content
-    priority_patterns = {
-        'trainers': ['/racing/profiles/trainer', '/racing/trainer', '/trainers'],
-        'jockeys': ['/racing/profiles/jockey', '/racing/jockey', '/jockeys'],
-        'horses': ['/racing/profiles/horse', '/racing/horse', '/horses'],
-        'races': ['/racing/results', '/racing/racecards', '/meetings']
+    # URL pages to exclude
+    exclude_patterns = {
+        'trainers': ['/future-entries', '/form'],
+        'jockeys': ['/future-entries', '/form'],
+        'horses': ['/form'],
+        'races': []
     }
-    
-    # If checking for a specific target URL (for testing), add it directly
-    if data_type == 'trainers' and 'profiles' in base_url:
-        test_url = 'https://www.sportinglife.com/racing/profiles/trainer/414'  # W P Mullins
-        urls_to_visit.append(test_url)
-        print(f"Added test URL for trainer: {test_url}")
     
     active_pattern = url_patterns.get(data_type)
     if not active_pattern:
         print(f"Error: Invalid data type '{data_type}'")
         return []
     
+    # Handle trainer URLs specially - generate direct numeric pattern for trainers
+    if data_type == 'trainers' and base_url.endswith('trainer/'):
+        # Clear the visit queue to use our optimized approach
+        urls_to_visit = []
+        # Start with trainer ID 1 and increment
+        for trainer_id in range(1, max_urls + 1):
+            urls_to_visit.append(f"{base_url}{trainer_id}")
+        print(f"Generated {len(urls_to_visit)} direct trainer URLs to check")
+    
+    excluded_patterns = exclude_patterns.get(data_type, [])
     print(f"Starting crawl. Looking for {data_type} URLs from {base_url}")
+    print(f"Excluding URLs containing: {excluded_patterns}")
     
     # Counter for logging
     pages_checked = 0
@@ -120,22 +125,21 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
         # Skip if already visited
         if current_url in visited_urls:
             continue
+            
+        # Skip if URL contains excluded patterns
+        if any(excluded in current_url for excluded in excluded_patterns):
+            continue
         
         visited_urls.add(current_url)
         pages_checked += 1
         
-        # Check if the current URL matches our pattern
-        if re.match(active_pattern, current_url) and current_url not in discovered_urls:
-            discovered_urls.append(current_url)
-            print(f"Found matching {data_type} URL: {current_url}")
-        
-        # Print progress every 5 pages
-        if pages_checked % 5 == 0:
+        # Print progress every 10 pages
+        if pages_checked % 10 == 0:
             print(f"Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs so far")
         
         try:
             # Add some delay to avoid overwhelming the server
-            time.sleep(random.uniform(0.3, 0.7))
+            time.sleep(random.uniform(0.2, 0.5))
             
             # Make request
             headers = {
@@ -143,21 +147,30 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
             }
             response = requests.get(current_url, headers=headers, timeout=10)
             
+            # Skip pages that don't exist (404) or other errors
             if response.status_code != 200:
-                print(f"Failed to fetch {current_url}: {response.status_code}")
+                print(f"Skipping {current_url}: {response.status_code}")
+                continue
+                
+            # Check if URL matches the pattern
+            if re.match(active_pattern, current_url) and current_url not in discovered_urls:
+                discovered_urls.append(current_url)
+                print(f"Found matching {data_type} URL: {current_url}")
+                
+                # If we've reached max_urls, stop
+                if len(discovered_urls) >= max_urls:
+                    break
+                
+            # For specific data types, we might not need to parse the page for links
+            if data_type == 'trainers' and base_url.endswith('trainer/'):
+                # Skip parsing for direct numeric traversal
                 continue
                 
             # Parse HTML
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Find all links
-            links = soup.find_all('a', href=True)
-            
-            # Sort links by priority for the specific data type
-            if data_type in priority_patterns:
-                links = sorted(links, key=lambda link: any(pattern in link['href'] for pattern in priority_patterns[data_type]), reverse=True)
-            
-            for link in links:
+            for link in soup.find_all('a', href=True):
                 href = link['href']
                 
                 # Convert relative URLs to absolute
@@ -170,10 +183,9 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
                 elif 'sportinglife.com' not in href:
                     continue
                     
-                # Debug output for URLs that might be of interest
-                priority_terms = priority_patterns.get(data_type, [])
-                if any(term in href for term in priority_terms) and href not in discovered_urls and href not in visited_urls:
-                    print(f"Found potential {data_type} URL: {href}")
+                # Skip URLs with excluded patterns
+                if any(excluded in href for excluded in excluded_patterns):
+                    continue
                 
                 # Normalize URL by removing trailing slash
                 href = href.rstrip('/')
@@ -182,29 +194,22 @@ def crawl_website(base_url, max_urls=1000, data_type=None):
                 if re.match(active_pattern, href) and href not in discovered_urls:
                     discovered_urls.append(href)
                     print(f"Found matching {data_type} URL: {href}")
+                    
+                    # If we've reached max_urls, stop
+                    if len(discovered_urls) >= max_urls:
+                        break
                 
                 # Add to visit queue if not already visited or queued
                 if href not in visited_urls and href not in urls_to_visit:
-                    # Always add URLs to the queue for unlimited depth traversal
                     urls_to_visit.append(href)
-                    
-                    # Prioritize URLs with relevant patterns by moving them to the front of the queue
-                    if data_type in priority_patterns and any(pattern in href for pattern in priority_patterns[data_type]):
-                        urls_to_visit.remove(href)
-                        urls_to_visit.insert(0, href)
-                
-                # Check if we've reached the max URLs limit
-                if len(discovered_urls) >= max_urls:
-                    break
-            
-            # Print progress update
-            if len(discovered_urls) > 0 and len(discovered_urls) % 10 == 0:
-                print(f"Progress: Found {len(discovered_urls)} URLs, visited {len(visited_urls)} pages, {len(urls_to_visit)} pages in queue")
             
         except Exception as e:
             print(f"Error processing {current_url}: {str(e)}")
     
     print(f"Crawl complete. Found {len(discovered_urls)} matching URLs after checking {pages_checked} pages")
+    if len(discovered_urls) >= max_urls:
+        print(f"Reached maximum URL limit of {max_urls}")
+        
     return discovered_urls
 
 def filter_urls_by_type(urls, url_type):
@@ -581,7 +586,7 @@ class ScraperUI:
             "races": "https://www.sportinglife.com/racing/results/",
             "horses": "https://www.sportinglife.com/racing/profiles/",
             "jockeys": "https://www.sportinglife.com/racing/profiles/",
-            "trainers": "https://www.sportinglife.com/racing/profiles/"
+            "trainers": "https://www.sportinglife.com/racing/profiles/trainer/"
         }
         
         self.base_url_var.set(default_urls.get(data_type, "https://www.sportinglife.com/racing/"))
