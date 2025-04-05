@@ -1,27 +1,25 @@
-# NewNewmarket
+# Racing Data Scraper
 
-A Python project for analyzing and visualizing data related to Newmarket.
+A Python script that extracts horse racing data from Sporting Life racing cards.
 
 ## Features
 
-- Data analysis of Newmarket-related information
-- Visualization of results
-- Statistical insights
+- Extracts horse names from racing cards
+- Organizes data by race
+- Saves extracted data to CSV file
+- Robust scraping with multiple fallback methods for different page structures
 
-## Getting Started
+## Requirements
 
-### Prerequisites
+- Python 3.6 or higher
+- Required packages:
+  - requests
+  - beautifulsoup4
+  - pandas
 
-- Python 3.x
-- Required packages: numpy, pandas, matplotlib
+## Installation
 
-### Installation
-
-1. Clone the repository:
-   ```
-   git clone git@github.com:peter-exp-ops/NewNewmarket.git
-   ```
-
+1. Clone this repository
 2. Install required packages:
    ```
    pip install -r requirements.txt
@@ -29,7 +27,23 @@ A Python project for analyzing and visualizing data related to Newmarket.
 
 ## Usage
 
-*Details will be added as the project develops.*
+Run the script directly:
+
+```
+python newnewmarket.py
+```
+
+The script will:
+1. Scrape the racing page at `https://www.sportinglife.com/racing/fast-cards/82929/2021-04-02/unknown`
+2. Extract all horse names from each race
+3. Print the horse names to the console
+4. Save all data to a CSV file named `horses_data.csv`
+
+## Output
+
+The script generates a CSV file with the following columns:
+- Race: The race name/number
+- Horse: The horse name
 
 ## License
 
