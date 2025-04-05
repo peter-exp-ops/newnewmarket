@@ -558,6 +558,101 @@ def scrape_jockey_page(url):
         print(f"Error scraping jockey page {url}: {str(e)}")
         return None
 
+def scrape_horse_page(url):
+    """
+    Scrape a horse profile page to extract horse information
+    
+    Args:
+        url (str): URL of the horse profile page
+        
+    Returns:
+        dict: Extracted horse data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract horse ID from URL
+        horse_id = int(url.split('/')[-1])
+        
+        # Extract horse name from the page header
+        horse_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not horse_name:
+            print(f"Could not find horse name at URL: {url}")
+            return None
+            
+        # Initialize horse data dictionary
+        horse_data = {
+            'id': horse_id,
+            'name': horse_name,
+            'foaled': None,
+            'sire': None,
+            'dam': None,
+            'owner': None
+        }
+        
+        # Look for details in the profile section
+        details_section = soup.find('div', class_='profile__details')
+        if details_section:
+            # Extract details from the table
+            detail_rows = details_section.find_all('tr')
+            for row in detail_rows:
+                cells = row.find_all('td')
+                if len(cells) >= 2:
+                    label = cells[0].text.strip().lower()
+                    value = cells[1].text.strip()
+                    
+                    if 'foaled' in label or 'born' in label:
+                        # Extract year from text like "25 Apr 2019 (5yo)"
+                        foaled_match = re.search(r'(\d{4})', value)
+                        if foaled_match:
+                            horse_data['foaled'] = foaled_match.group(1)
+                    elif 'sire' in label:
+                        horse_data['sire'] = value
+                    elif 'dam' in label:
+                        horse_data['dam'] = value
+                    elif 'owner' in label:
+                        horse_data['owner'] = value
+        
+        # If we couldn't find details in the primary location, look for alternative sections
+        if not any([horse_data['foaled'], horse_data['sire'], horse_data['dam'], horse_data['owner']]):
+            # Look for details in other parts of the page
+            info_sections = soup.find_all('div', class_='details-list')
+            for section in info_sections:
+                items = section.find_all('li')
+                for item in items:
+                    label_elem = item.find('span', class_='details-list__label')
+                    value_elem = item.find('span', class_='details-list__value')
+                    
+                    if label_elem and value_elem:
+                        label = label_elem.text.strip().lower()
+                        value = value_elem.text.strip()
+                        
+                        if 'foaled' in label or 'born' in label:
+                            # Extract year from text
+                            foaled_match = re.search(r'(\d{4})', value)
+                            if foaled_match:
+                                horse_data['foaled'] = foaled_match.group(1)
+                        elif 'sire' in label:
+                            horse_data['sire'] = value
+                        elif 'dam' in label:
+                            horse_data['dam'] = value
+                        elif 'owner' in label:
+                            horse_data['owner'] = value
+        
+        # Check if we found any meaningful data beyond ID and name
+        if not any([horse_data['foaled'], horse_data['sire'], horse_data['dam'], horse_data['owner']]):
+            print(f"Warning: Limited horse data found for {horse_name} at {url}")
+        
+        return horse_data
+        
+    except Exception as e:
+        print(f"Error scraping horse page {url}: {str(e)}")
+        return None
+
 def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callback=None, conn=None):
     """
     Scrape a limited number of URLs of a specific type
@@ -612,9 +707,10 @@ def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callb
             elif url_type == 'jockeys':
                 log(f"Scraping jockey data from: {url}")
                 data = scrape_jockey_page(url)
+            elif url_type == 'horses':
+                log(f"Scraping horse data from: {url}")
+                data = scrape_horse_page(url)
             # Add other types here when implemented
-            # elif url_type == 'horses':
-            #     data = scrape_horse_page(url)
             # elif url_type == 'races':
             #     data = scrape_race_page(url)
             
@@ -709,9 +805,18 @@ def process_scraped_data(data, data_type):
                 'id': jockey['id'],
                 'name': jockey['name']
             })
+    elif data_type == 'horses':
+        # For horses, include all the extracted fields
+        for horse in data:
+            processed_data.append({
+                'id': horse['id'],
+                'name': horse['name'],
+                'foaled': horse['foaled'],
+                'sire': horse['sire'],
+                'dam': horse['dam'],
+                'owner': horse['owner']
+            })
     # Add other data types here when implemented
-    # elif data_type == 'horses':
-    #    ...
     # elif data_type == 'races':
     #    ...
     
@@ -760,9 +865,26 @@ def save_data_to_database(conn, data, data_type):
                         records_saved += 1
                 except Exception as e:
                     print(f"Error saving jockey {jockey['name']}: {str(e)}")
+        elif data_type == 'horses':
+            # Save horse data to the horses table
+            for horse in data:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO horses (ID, Name, Foaled, Sire, Dam, Owner) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            horse['id'], 
+                            horse['name'], 
+                            horse['foaled'], 
+                            horse['sire'], 
+                            horse['dam'], 
+                            horse['owner']
+                        )
+                    )
+                    if cursor.rowcount > 0:
+                        records_saved += 1
+                except Exception as e:
+                    print(f"Error saving horse {horse['name']}: {str(e)}")
         # Add other data types here when implemented
-        # elif data_type == 'horses':
-        #    ...
         # elif data_type == 'races':
         #    ...
         
