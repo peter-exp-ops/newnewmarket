@@ -145,7 +145,11 @@ def create_horses_table(conn):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS horses (
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Name TEXT UNIQUE NOT NULL
+        Name TEXT UNIQUE NOT NULL,
+        Foaled DATETIME,
+        Sire TEXT,
+        Dam TEXT,
+        Owner TEXT
     )
     """)
     
@@ -174,15 +178,15 @@ def create_racehorses_table(conn):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS racehorses (
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        raceID INTEGER NOT NULL,
-        horseID INTEGER NOT NULL,
-        jockeyID INTEGER,
-        trainerID INTEGER,
-        time REAL,
-        position INTEGER,
-        positionof INTEGER,
-        timeahead REAL,
-        timebehind REAL,
+        RaceID INTEGER NOT NULL,
+        HorseID INTEGER NOT NULL,
+        JockeyID INTEGER,
+        TrainerID INTEGER,
+        Time REAL,
+        Position INTEGER,
+        Positionof INTEGER,
+        Timeahead REAL,
+        Timebehind REAL,
         FOREIGN KEY (raceID) REFERENCES races(ID) ON DELETE CASCADE,
         FOREIGN KEY (horseID) REFERENCES horses(ID) ON DELETE CASCADE,
         FOREIGN KEY (jockeyID) REFERENCES jockeys(ID) ON DELETE SET NULL,
@@ -226,7 +230,8 @@ def create_urls_table(conn):
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
         URL TEXT UNIQUE NOT NULL,
         Date_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        Success INTEGER DEFAULT 0
+        Success BOOLEAN DEFAULT FALSE,
+        Type TEXT
     )
     """)
     
