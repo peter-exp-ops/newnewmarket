@@ -230,7 +230,7 @@ def create_urls_table(conn):
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
         URL TEXT UNIQUE NOT NULL,
         Date_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        Success BOOLEAN DEFAULT FALSE,
+        status TEXT DEFAULT "unprocessed",
         Type TEXT
     )
     """)
@@ -240,9 +240,9 @@ def create_urls_table(conn):
     CREATE INDEX IF NOT EXISTS idx_urls_url ON urls (URL)
     """)
     
-    # Create index on success for filtering
+    # Create index on status for filtering
     cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_urls_success ON urls (Success)
+    CREATE INDEX IF NOT EXISTS idx_urls_status ON urls (status)
     """)
     
     # Commit the changes

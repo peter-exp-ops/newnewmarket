@@ -89,25 +89,25 @@ def get_url_status(conn, url):
         url (str): URL to check
         
     Returns:
-        int: Status of URL (1 for processed, 0 for not processed, None if not found)
+        str: Status of URL ('processed', 'unprocessed', 'failed', or None if not found)
     """
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT success FROM urls WHERE url = ?", (url,))
+        cursor.execute("SELECT status FROM urls WHERE url = ?", (url,))
         result = cursor.fetchone()
         return result[0] if result else None
     except Exception as e:
         print(f"Error checking URL status: {str(e)}")
         return None
 
-def save_urls_to_database(conn, urls, success=0):
+def save_urls_to_database(conn, urls, status="unprocessed"):
     """
     Save URLs to the database
     
     Args:
         conn (sqlite3.Connection): Database connection
         urls (list): URLs to save
-        success (int): Success status (1 for success, 0 for not processed)
+        status (str): Status value (default: "unprocessed")
         
     Returns:
         int: Number of URLs saved
@@ -123,7 +123,7 @@ def save_urls_to_database(conn, urls, success=0):
         CREATE TABLE IF NOT EXISTS urls (
             url TEXT PRIMARY KEY,
             date_accessed TIMESTAMP,
-            success BOOLEAN,
+            status TEXT DEFAULT "unprocessed",
             type TEXT
         )
         ''')
@@ -147,9 +147,9 @@ def save_urls_to_database(conn, urls, success=0):
             return 'unknown'
         
         # Use executemany for better performance
-        url_data = [(url, timestamp, success, get_url_type(url)) for url in urls]
+        url_data = [(url, timestamp, status, get_url_type(url)) for url in urls]
         cursor.executemany(
-            "INSERT OR IGNORE INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
             url_data
         )
         
@@ -373,8 +373,8 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                         
                         # Add to URLs table with success=0 (not scraped)
                         cursor.execute(
-                            "INSERT OR IGNORE INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
-                            (current_url, timestamp, 0, url_type)
+                            "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
+                            (current_url, timestamp, "unprocessed", url_type)
                         )
                         conn.commit()
                     except Exception as db_error:
@@ -476,7 +476,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             CREATE TABLE IF NOT EXISTS urls (
                 url TEXT PRIMARY KEY,
                 date_accessed TIMESTAMP,
-                success BOOLEAN,
+                status TEXT DEFAULT "unprocessed",
                 type TEXT
             )
             ''')
@@ -488,11 +488,11 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             url_data = []
             for url in discovered_urls:
                 url_type = get_url_type(url)
-                url_data.append((url, timestamp, 0, url_type))
+                url_data.append((url, timestamp, "unprocessed", url_type))
             
             # Insert URLs in batches to improve performance
             cursor.executemany(
-                "INSERT OR IGNORE INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
                 url_data
             )
             conn.commit()
@@ -623,7 +623,7 @@ def scrape_urls_by_type(urls, url_type, limit, conn=None, log_callback=None, pro
             for i, url in enumerate(urls):
                 # Update URL status to processed
                 cursor.execute(
-                    "UPDATE urls SET date_accessed = ?, success = 1 WHERE url = ?",
+                    "UPDATE urls SET date_accessed = ?, status = 'processed' WHERE url = ?",
                     (timestamp, url)
                 )
                 
@@ -727,31 +727,23 @@ class CollectorUI:
         ttk.Label(crawler_frame, text="URL:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.base_url_var = StringVar(value="https://www.sportinglife.com/racing/results/")
         ttk.Entry(crawler_frame, textvariable=self.base_url_var, width=70).grid(row=0, column=1, columnspan=2, padx=5, pady=5)
-        
-        # Add data type selection
-        ttk.Label(crawler_frame, text="Data Type:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        self.data_type_var = StringVar(value="races")
-        data_type_combo = ttk.Combobox(crawler_frame, textvariable=self.data_type_var, width=10, 
-                                      values=["all", "races", "jockeys", "trainers", "horses"], 
-                                      state="readonly")
-        data_type_combo.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        
+                
         # Add timeout control
-        ttk.Label(crawler_frame, text="Timeout (mins):").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(crawler_frame, text="Timeout (mins):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.timeout_var = tk.IntVar(value=10)
         timeout_spinner = ttk.Spinbox(crawler_frame, from_=1, to=60, increment=1, textvariable=self.timeout_var, width=5)
-        timeout_spinner.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        timeout_spinner.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         
         # Add max URLs control
-        ttk.Label(crawler_frame, text="Max URLs:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(crawler_frame, text="Max URLs:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
         self.max_urls_var = tk.IntVar(value=100)
         max_urls_spinner = ttk.Spinbox(crawler_frame, from_=10, to=10000, increment=10, textvariable=self.max_urls_var, width=5)
-        max_urls_spinner.grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        max_urls_spinner.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
         
-        ttk.Button(crawler_frame, text="Crawl Website", command=self.crawl_website).grid(row=4, column=0, padx=5, pady=5)
+        ttk.Button(crawler_frame, text="Crawl Website", command=self.crawl_website).grid(row=3, column=0, padx=5, pady=5)
         
         self.crawl_stats_var = StringVar(value="Not started")
-        ttk.Label(crawler_frame, textvariable=self.crawl_stats_var).grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(crawler_frame, textvariable=self.crawl_stats_var).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
         
         # 3. Scraper section
         scraper_frame = ttk.LabelFrame(main_frame, text="Scrape", padding="10")
@@ -836,17 +828,16 @@ class CollectorUI:
     def crawl_website(self):
         """
         Crawl the website to find URLs of races, jockeys, trainers, and horses.
-        URLs are saved to the database with success=FALSE.
+        URLs are saved to the database with status="unprocessed".
         """
         base_url = self.base_url_var.get()
         max_urls = self.max_urls_var.get()
         timeout_mins = self.timeout_var.get()
-        data_type = self.data_type_var.get()
         
         def run_crawler():
             try:
                 # Initialize log and variables
-                log_message = f"Starting crawl of {base_url} for {data_type} URLs with timeout {timeout_mins} mins, max {max_urls} URLs..."
+                log_message = f"Starting crawl of {base_url} for all URL types with timeout {timeout_mins} mins, max {max_urls} URLs..."
                 self.log(log_message)
                 
                 # Update UI
@@ -926,21 +917,15 @@ class CollectorUI:
                             # Check if it matches any of our patterns
                             matched = False
                             
-                            # If data_type is 'all', check all patterns
-                            if data_type == 'all':
-                                for pattern in url_patterns.values():
-                                    if pattern.search(href):
-                                        matched = True
-                                        break
-                                if race_results_pattern.search(href):
+                            # Check all patterns since we're crawling for all types
+                            for pattern in url_patterns.values():
+                                if pattern.search(href):
                                     matched = True
-                            # Otherwise, check only the specified pattern
-                            elif data_type == 'races':
-                                if url_patterns['races'].search(href) or race_results_pattern.search(href):
-                                    matched = True
-                            elif data_type in url_patterns:
-                                if url_patterns[data_type].search(href):
-                                    matched = True
+                                    break
+                            
+                            # Also check race results pattern
+                            if race_results_pattern.search(href):
+                                matched = True
                             
                             # Skip if no match
                             if not matched:
@@ -960,7 +945,7 @@ class CollectorUI:
                                 elapsed = time.time() - start_time
                                 stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
                                 self.crawl_stats_var.set(stats)
-                                root.update()
+                                self.root.update()
                             
                             # Check if we've hit the max
                             if url_count >= max_urls:
@@ -1031,11 +1016,11 @@ class CollectorUI:
                 
                 # Filter by status
                 if status_filter == 'unprocessed':
-                    query += " AND (success = 0 OR success IS NULL)"
+                    query += " AND (status = 'unprocessed' OR status IS NULL)"
                 elif status_filter == 'failed':
-                    query += " AND success = -1"
+                    query += " AND status = 'failed'"
                 elif status_filter == 'successful':
-                    query += " AND success = 1"
+                    query += " AND status = 'successful'"
                 
                 # Add limit
                 query += " LIMIT ?"
@@ -1153,7 +1138,7 @@ class CollectorUI:
                 CREATE TABLE IF NOT EXISTS urls (
                     url TEXT PRIMARY KEY,
                     date_accessed TIMESTAMP,
-                    success INTEGER,
+                    status TEXT DEFAULT "unprocessed",
                     type TEXT
                 )
                 ''')
@@ -1164,14 +1149,14 @@ class CollectorUI:
             self.log(f"Error checking database structure: {str(e)}")
             return False
 
-    def save_urls_to_database(self, conn, urls, success=0):
+    def save_urls_to_database(self, conn, urls, status="unprocessed"):
         """
         Save URLs to the database
         
         Args:
             conn (sqlite3.Connection): Database connection
             urls (list): URLs to save
-            success (int): Success status (1 for success, 0 for not processed)
+            status (str): Status value (default: "unprocessed")
             
         Returns:
             int: Number of URLs saved
@@ -1187,7 +1172,7 @@ class CollectorUI:
             CREATE TABLE IF NOT EXISTS urls (
                 url TEXT PRIMARY KEY,
                 date_accessed TIMESTAMP,
-                success INTEGER,
+                status TEXT DEFAULT "unprocessed",
                 type TEXT
             )
             ''')
@@ -1211,9 +1196,9 @@ class CollectorUI:
                 return 'unknown'
             
             # Use executemany for better performance
-            url_data = [(url, timestamp, success, get_url_type(url)) for url in urls]
+            url_data = [(url, timestamp, status, get_url_type(url)) for url in urls]
             cursor.executemany(
-                "INSERT OR IGNORE INTO urls (url, date_accessed, success, type) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
                 url_data
             )
             
