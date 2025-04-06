@@ -221,9 +221,10 @@ def get_url_stats(conn):
         
         # Define status mapping to standardize status names
         status_mapping = {
-            "successful": "processed",
-            "success": "processed",
-            "completed": "processed",
+            "successful": "succeeded",
+            "success": "succeeded",
+            "completed": "succeeded",
+            "processed": "succeeded",
             "error": "failed",
             "errors": "failed",
             "failure": "failed"
@@ -1522,7 +1523,7 @@ class CollectorUI:
             return
         
         # Define the specific status columns we want to show in the specified order
-        ordered_statuses = ["unprocessed", "failed", "processed", "all"]
+        ordered_statuses = ["unprocessed", "failed", "succeeded", "all"]
         
         # Create table as a grid of labels
         # Header row with status types
