@@ -279,63 +279,6 @@ def initialize_database(db_path="racing_data.db"):
     conn.commit()
     return conn
 
-def rename_racehorse_table(conn):
-    """
-    Rename the racehorse table to racehorses
-    
-    Args:
-        conn (sqlite3.Connection): Database connection
-        
-    Returns:
-        bool: True if table was renamed successfully
-    """
-    cursor = conn.cursor()
-    
-    # Check if the old table exists
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='racehorse'")
-    if not cursor.fetchone():
-        print("Table 'racehorse' does not exist.")
-        return False
-    
-    # Rename the table - SQLite doesn't have a direct RENAME TABLE command,
-    # so we need to create a new table and copy the data
-    cursor.execute("""
-    CREATE TABLE racehorses (
-        ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        raceID INTEGER NOT NULL,
-        horseID INTEGER NOT NULL,
-        jockeyID INTEGER,
-        trainerID INTEGER,
-        time REAL,
-        lengths TEXT,
-        position INTEGER,
-        positionof INTEGER,
-        timeahead REAL,
-        timebehind REAL,
-        FOREIGN KEY (raceID) REFERENCES races(ID) ON DELETE CASCADE,
-        FOREIGN KEY (horseID) REFERENCES horses(ID) ON DELETE CASCADE,
-        FOREIGN KEY (jockeyID) REFERENCES jockeys(ID) ON DELETE SET NULL,
-        FOREIGN KEY (trainerID) REFERENCES trainers(ID) ON DELETE SET NULL
-    )
-    """)
-    
-    # Copy data from old table to new table
-    cursor.execute("INSERT INTO racehorses SELECT * FROM racehorse")
-    
-    # Drop the old table
-    cursor.execute("DROP TABLE racehorse")
-    
-    # Recreate the indexes
-    cursor.execute("CREATE INDEX idx_racehorses_race ON racehorses (raceID)")
-    cursor.execute("CREATE INDEX idx_racehorses_horse ON racehorses (horseID)")
-    cursor.execute("CREATE INDEX idx_racehorses_jockey ON racehorses (jockeyID)")
-    cursor.execute("CREATE INDEX idx_racehorses_trainer ON racehorses (trainerID)")
-    
-    # Commit the changes
-    conn.commit()
-    print("Table 'racehorse' renamed to 'racehorses'.")
-    return True
-
 def delete_all_records(conn):
     """
     Delete all records from all tables in the database
