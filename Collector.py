@@ -131,23 +131,35 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
         # Get current timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        # Helper function to determine URL type based on pattern
+        # Define URL patterns for each type with strict matching
+        url_patterns = {
+            'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+            'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+            'horses': re.compile(r'/racing/profiles/horse/\d+$'),
+            'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Complete race URL
+        }
+        
+        # Helper function to determine URL type
         def get_url_type(url):
-            patterns = {
-                'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+',
-                'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+',
-                'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-                'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
-            }
+            # Remove protocol and domain for matching
+            url_path = url.replace('https://www.sportinglife.com', '')
             
-            for url_type, pattern in patterns.items():
-                if re.match(pattern, url):
-                    return url_type
-            
+            for type_name, pattern in url_patterns.items():
+                if pattern.search(url_path):
+                    return type_name
             return 'unknown'
         
+        # Filter out date-only URLs that might have slipped through
+        date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
+        filtered_urls = [url for url in urls if not date_pattern.search(url.replace('https://www.sportinglife.com', ''))]
+        
+        if len(filtered_urls) < len(urls):
+            # Use log callback if available
+            log_message = f"Filtered out {len(urls) - len(filtered_urls)} date-only URLs"
+            print(log_message)  # Always print
+        
         # Use executemany for better performance
-        url_data = [(url, timestamp, status, get_url_type(url)) for url in urls]
+        url_data = [(url, timestamp, status, get_url_type(url)) for url in filtered_urls]
         cursor.executemany(
             "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
             url_data
@@ -201,98 +213,37 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             percent = min(100, int((current / total) * 100))
             progress_callback(percent)
     
-    # URL patterns to match for different types
+    # Define URL patterns for each type - more strict patterns
     url_patterns = {
-        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+$',
-        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+$',
-        'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+$',
-        # 'all' pattern matches any of the above
-        'all': r'https?://www\.sportinglife\.com/racing/(results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+|profiles/(jockey|trainer|horse)/\d+)$'
-    }
-
-    # URL base patterns by type for direct ID-based enumeration
-    base_patterns = {
-        'jockeys': 'https://www.sportinglife.com/racing/profiles/jockey/',
-        'trainers': 'https://www.sportinglife.com/racing/profiles/trainer/',
-        'horses': 'https://www.sportinglife.com/racing/profiles/horse/',
-        'races': 'https://www.sportinglife.com/racing/results/'
+        'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+        'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+        'horses': re.compile(r'/racing/profiles/horse/\d+$'),
+        'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Must include course and race ID
     }
     
-    # Check if we're looking for all types
-    if data_type == 'all':
-        active_pattern = url_patterns['all']
-        log("Searching for all URL types: races, jockeys, trainers, and horses")
-    else:
-        # Check if the data type is valid
-        active_pattern = url_patterns.get(data_type)
-        if not active_pattern:
-            log(f"Error: Invalid data type '{data_type}'")
-            return []
+    # Useful patterns that we follow but don't save
+    date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
     
-    # Special handling for race results page
-    if base_url == "https://www.sportinglife.com/racing/results/":
-        log("Special handling for race results page - scanning for date-based links")
-        try:
-            # Get the main results page
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            response = requests.get(base_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Look for date-based links (calendar items, date tabs)
-                date_links = []
-                
-                # Find date links in the calendar
-                for link in soup.find_all('a', href=True):
-                    href = link['href']
-                    if '/racing/results/' in href and re.search(r'/\d{4}-\d{2}-\d{2}', href):
-                        full_url = "https://www.sportinglife.com" + href if href.startswith('/') else href
-                        if full_url not in date_links:
-                            date_links.append(full_url)
-                
-                log(f"Found {len(date_links)} date-based links in the results page")
-                
-                # Add date links to visit queue
-                for link in date_links:
-                    if link not in urls_to_visit:
-                        urls_to_visit.append(link)
-        except Exception as e:
-            log(f"Error processing main results page: {str(e)}")
+    # Add debugging
+    log(f"Initial queue: {urls_to_visit}")
+    log(f"Using patterns: {[p.pattern for p in url_patterns.values()]}")
     
-    # Special handling for direct ID-based URL types (jockeys, trainers, horses)
-    elif data_type in ['jockeys', 'trainers', 'horses'] and base_url.endswith('/'):
-        base_pattern = base_patterns.get(data_type)
-        if base_pattern and base_url.startswith(base_pattern):
-            log(f"Direct ID search for {data_type} - will try sequential IDs")
-            
-            # Start with a reasonable ID range based on type
-            start_id = 1
-            max_id = 10000  # Default
-            
-            if data_type == 'jockeys':
-                max_id = 5000  # Fewer jockeys than horses
-            elif data_type == 'trainers':
-                max_id = 10000  # Fewer trainers than horses
-            elif data_type == 'horses':
-                max_id = 2000000  # Lots of horses
-                
-            # Generate URLs with sequential IDs
-            for id_num in range(start_id, min(start_id + max_urls, max_id + 1)):
-                url = f"{base_pattern}{id_num}"
-                # Skip if already processed successfully
-                if url in captured_urls and captured_urls[url] == 1:
-                    continue
-                urls_to_visit.append(url)
-                # Check for timeout every 100 IDs to avoid excessive checks
-                if id_num % 100 == 0 and timeout_callback and timeout_callback():
-                    log("Timeout reached during ID generation.")
-                    break
-            
-            log(f"Generated {len(urls_to_visit)} potential {data_type} URLs to check")
+    # Helper function to normalize URLs
+    def normalize_url(url):
+        # Ensure it's an absolute URL
+        if url.startswith('/'):
+            url = 'https://www.sportinglife.com' + url
+        # Remove trailing slash if present
+        if url.endswith('/'):
+            url = url[:-1]
+        return url
+    
+    # Helper function to determine URL type
+    def get_url_type(url):
+        for type_name, pattern in url_patterns.items():
+            if pattern.search(url):
+                return type_name
+        return None
     
     # Log start of crawl
     log(f"Starting crawl from {base_url}")
@@ -304,13 +255,6 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     found_by_type = {'races': 0, 'jockeys': 0, 'trainers': 0, 'horses': 0}
     no_new_urls_count = 0
     consecutive_empty_count = 0
-    
-    # Helper function to check URL type
-    def get_url_type(url):
-        for type_name, pattern in url_patterns.items():
-            if type_name != 'all' and re.match(pattern, url):
-                return type_name
-        return None
     
     # Process URLs in queue until max_urls discovered or queue empty
     while urls_to_visit and len(discovered_urls) < max_urls:
@@ -869,16 +813,16 @@ class CollectorUI:
                 queue = [base_url]
                 url_count = 0
                 
-                # Define URL patterns for each type - more lenient patterns
+                # Define URL patterns for each type - more strict patterns
                 url_patterns = {
-                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+'),
-                    'trainers': re.compile(r'/racing/profiles/trainer/\d+'),
-                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}'),
-                    'horses': re.compile(r'/racing/profiles/horse/\d+')
+                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+                    'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+                    'horses': re.compile(r'/racing/profiles/horse/\d+$'),
+                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Must include course and race ID
                 }
                 
-                # Additional pattern for race results pages
-                race_results_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+')
+                # Useful patterns that we follow but don't save
+                date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
                 
                 # Add debugging
                 self.log(f"Initial queue: {queue}")
@@ -893,6 +837,13 @@ class CollectorUI:
                     if url.endswith('/'):
                         url = url[:-1]
                     return url
+                
+                # Helper function to determine URL type
+                def get_url_type(url):
+                    for type_name, pattern in url_patterns.items():
+                        if pattern.search(url):
+                            return type_name
+                    return None
                 
                 while queue and url_count < max_urls and not timeout_reached():
                     current_url = queue.pop(0)
@@ -925,6 +876,7 @@ class CollectorUI:
                         
                         # Count how many links match our patterns
                         matching_count = 0
+                        date_count = 0
                         
                         # Process each link
                         for link in links:
@@ -937,24 +889,19 @@ class CollectorUI:
                             if not href.startswith('https://www.sportinglife.com/'):
                                 continue
                             
-                            # Check if it matches any of our patterns
-                            matched = False
-                            match_type = None
+                            # Check if it matches any of our target patterns
+                            match_type = get_url_type(href)
                             
-                            # Check all patterns since we're crawling for all types
-                            for type_name, pattern in url_patterns.items():
-                                if pattern.search(href):
-                                    matched = True
-                                    match_type = type_name
-                                    break
+                            # Handle date-only URLs separately
+                            if match_type is None and date_pattern.search(href):
+                                date_count += 1
+                                if href not in visited_urls and href not in queue:
+                                    queue.append(href)
+                                    self.log(f"Found date URL to follow: {href}")
+                                continue
                             
-                            # Also check race results pattern
-                            if not matched and race_results_pattern.search(href):
-                                matched = True
-                                match_type = 'races'
-                            
-                            # Skip if no match
-                            if not matched:
+                            # Skip if no match to target patterns
+                            if match_type is None:
                                 continue
                                 
                             matching_count += 1
@@ -980,7 +927,7 @@ class CollectorUI:
                             if url_count >= max_urls:
                                 break
                         
-                        self.log(f"Page had {matching_count} links matching our patterns")
+                        self.log(f"Page had {matching_count} matching target URLs and {date_count} date pages to follow")
                             
                     except Exception as e:
                         self.log(f"Error processing {current_url}: {str(e)}")
@@ -1214,23 +1161,33 @@ class CollectorUI:
             # Get current timestamp
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Helper function to determine URL type based on pattern
+            # Define URL patterns for each type with strict matching
+            url_patterns = {
+                'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+                'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+                'horses': re.compile(r'/racing/profiles/horse/\d+$'),
+                'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Complete race URL
+            }
+            
+            # Helper function to determine URL type
             def get_url_type(url):
-                patterns = {
-                    'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+',
-                    'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+',
-                    'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-                    'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
-                }
+                # Remove protocol and domain for matching
+                url_path = url.replace('https://www.sportinglife.com', '')
                 
-                for url_type, pattern in patterns.items():
-                    if re.match(pattern, url):
-                        return url_type
-                
+                for type_name, pattern in url_patterns.items():
+                    if pattern.search(url_path):
+                        return type_name
                 return 'unknown'
             
+            # Filter out date-only URLs that might have slipped through
+            date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
+            filtered_urls = [url for url in urls if not date_pattern.search(url.replace('https://www.sportinglife.com', ''))]
+            
+            if len(filtered_urls) < len(urls):
+                self.log(f"Filtered out {len(urls) - len(filtered_urls)} date-only URLs")
+            
             # Use executemany for better performance
-            url_data = [(url, timestamp, status, get_url_type(url)) for url in urls]
+            url_data = [(url, timestamp, status, get_url_type(url)) for url in filtered_urls]
             cursor.executemany(
                 "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
                 url_data
