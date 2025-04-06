@@ -4,6 +4,54 @@ import pandas as pd
 import os
 import webbrowser
 from datetime import datetime
+import http.server
+import socketserver
+import threading
+import urllib.parse
+
+# Global variable to track if server is running
+server_thread = None
+PORT = 8000
+
+class RacingDataHandler(http.server.SimpleHTTPRequestHandler):
+    """Custom HTTP request handler for racing data viewer"""
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        parsed_path = urllib.parse.urlparse(self.path)
+        
+        # Check if this is a refresh request
+        if parsed_path.path == '/refresh':
+            # Generate a new report
+            generate_html_report()
+            # Redirect back to the main page
+            self.send_response(302)  # Redirect
+            self.send_header('Location', '/viewer.html')
+            self.end_headers()
+            return
+            
+        # Otherwise, handle normally
+        return http.server.SimpleHTTPRequestHandler.do_GET(self)
+    
+    def log_message(self, format, *args):
+        """Suppress server logs"""
+        return
+
+def start_server():
+    """Start the HTTP server in a separate thread"""
+    global server_thread
+    
+    # Only start if not already running
+    if server_thread is None or not server_thread.is_alive():
+        # Create a server
+        handler = RacingDataHandler
+        httpd = socketserver.TCPServer(("", PORT), handler)
+        
+        # Start server in a new thread
+        server_thread = threading.Thread(target=httpd.serve_forever)
+        server_thread.daemon = True  # So it exits when the main program exits
+        server_thread.start()
+        print(f"Server started on port {PORT}")
 
 def generate_html_report():
     """Generate an HTML report from the racing_data.db file with a tabbed interface"""
@@ -83,6 +131,22 @@ def generate_html_report():
                     border-radius: 4px;
                     padding: 15px;
                     margin-bottom: 20px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }}
+                .refresh-button {{
+                    background-color: #4c6ef5;
+                    color: white;
+                    border: none;
+                    padding: 10px 15px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 16px;
+                    transition: background-color 0.3s;
+                }}
+                .refresh-button:hover {{
+                    background-color: #364fc7;
                 }}
                 /* Tab styling */
                 .tabs {{
@@ -215,11 +279,13 @@ def generate_html_report():
             </div>
             
             <div class="container">
-                <p>Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                
                 <div class="info-box">
-                    <h2>Database Information</h2>
-                    <p>Tables in database: {', '.join(table_names)}</p>
+                    <div>
+                        <h2>Database Information</h2>
+                        <p>Tables in database: {', '.join(table_names)}</p>
+                        <p>Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    </div>
+                    <a href="/refresh" class="refresh-button">Refresh Data</a>
                 </div>
         """
         
@@ -469,7 +535,38 @@ def check_database():
     except Exception as e:
         print(f"Error: {e}")
 
+def open_html_report():
+    """Generate the report and open it in a browser using a local server"""
+    try:
+        # Generate HTML report
+        generate_html_report()
+        
+        # Start the HTTP server if not already running
+        start_server()
+        
+        # Open the report in the default browser
+        url = f"http://localhost:{PORT}/viewer.html"
+        print(f"Opening in browser: {url}")
+        webbrowser.open(url)
+        
+        return True
+        
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return False
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
 if __name__ == "__main__":
-    generate_html_report()
+    open_html_report()
     print("\nAlso printing database contents to console:")
-    check_database() 
+    check_database()
+    
+    # Keep the main thread running to maintain the server
+    try:
+        while server_thread and server_thread.is_alive():
+            # Check every 5 seconds if we should continue
+            server_thread.join(5)
+    except KeyboardInterrupt:
+        print("Shutting down...") 
