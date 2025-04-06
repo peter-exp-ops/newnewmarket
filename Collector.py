@@ -935,6 +935,7 @@ class CollectorUI:
         base_url = self.base_url_var.get()
         max_urls = self.max_urls_var.get()
         timeout_mins = self.timeout_var.get()
+        resume_crawl = True  # Add option to resume if a saved state exists
         
         def run_crawler():
             try:
@@ -963,15 +964,25 @@ class CollectorUI:
                 
                 # Get existing URLs from database to avoid duplicates
                 cursor = conn.cursor()
-                cursor.execute("SELECT url FROM urls")
-                existing_urls = {row[0] for row in cursor.fetchall()}
+                cursor.execute("SELECT url, status FROM urls")
+                existing_urls = {row[0]: row[1] for row in cursor.fetchall()}
                 
-                discovered_urls = set()
-                visited_urls = set()
-                queue = [base_url]
-                url_count = 0
+                # Try to load saved state if resume is enabled
+                crawl_state = {}
+                if resume_crawl:
+                    crawl_state = load_crawl_state()
+                    if crawl_state:
+                        self.log(f"Loaded saved crawl state with {len(crawl_state.get('visited_urls', []))} visited and {len(crawl_state.get('urls_to_visit', []))} pending URLs")
                 
-                # Define URL patterns for each type - less restrictive patterns
+                # Initialize or resume crawl state
+                visited_urls = crawl_state.get('visited_urls', set())
+                discovered_urls = []  # We'll track these as we go
+                urls_to_visit = crawl_state.get('urls_to_visit', [base_url])
+                
+                if not urls_to_visit:
+                    urls_to_visit = [base_url]  # Ensure we have a starting point
+                
+                # Define URL patterns for each type
                 url_patterns = {
                     'jockeys': re.compile(r'/racing/profiles/jockey/'),
                     'trainers': re.compile(r'/racing/profiles/trainer/'),
@@ -983,7 +994,7 @@ class CollectorUI:
                 date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
                 
                 # Add debugging
-                self.log(f"Initial queue: {queue}")
+                self.log(f"Initial queue: {urls_to_visit[:5]}... (total: {len(urls_to_visit)})")
                 self.log(f"Using patterns: {[p.pattern for p in url_patterns.values()]}")
                 
                 # Helper function to normalize URLs
@@ -998,8 +1009,11 @@ class CollectorUI:
                 
                 # Helper function to determine URL type
                 def get_url_type(url):
+                    # Remove protocol and domain for matching
+                    url_path = url.replace('https://www.sportinglife.com', '')
+                    
                     for type_name, pattern in url_patterns.items():
-                        if pattern.search(url):
+                        if pattern.search(url_path):
                             return type_name
                     return None
                 
@@ -1024,209 +1038,198 @@ class CollectorUI:
                         return False
                         
                     # Skip if already processed or queued
-                    if href in discovered_urls or href in existing_urls:
+                    if href in discovered_urls or href in visited_urls:
+                        return False
+                    
+                    # Skip if already in database with processed status
+                    if href in existing_urls and existing_urls[href] == 'processed':
                         return False
                     
                     # Add to discovered URLs and queue
-                    discovered_urls.add(href)
-                    queue.append(href)
-                    nonlocal url_count
-                    url_count += 1
-                    self.log(f"Found matching URL ({url_type}): {href} from {source_url}")
+                    discovered_urls.append(href)
+                    urls_to_visit.append(href)
                     
-                    # Periodically update UI
-                    if url_count % 10 == 0 or url_count == 1:  # Also update on first URL
-                        elapsed = time.time() - start_time
-                        stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
-                        self.crawl_stats_var.set(stats)
-                        self.root.update()
+                    # Save to database
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    try:
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
+                            (href, timestamp, "unprocessed", url_type)
+                        )
+                        conn.commit()
+                    except Exception as db_error:
+                        self.log(f"Error saving URL to database: {str(db_error)}")
                     
                     return True
                 
-                while queue and url_count < max_urls and not timeout_reached():
-                    current_url = queue.pop(0)
-                    current_url = normalize_url(current_url)
+                # Variables for detecting saturation
+                window_size = 1000  # Look at last 1000 pages
+                discovery_window = []  # Track new URLs discovered in the window
+                discovery_threshold = 0.05  # 5% discovery rate
+                save_interval = 100  # Save state every 100 pages
+                
+                # Main crawling loop
+                pages_visited = 0
+                
+                while urls_to_visit and len(discovered_urls) < max_urls:
+                    # Check for timeout
+                    if timeout_reached():
+                        self.log("Timeout reached. Saving state and stopping crawl.")
+                        break
                     
+                    # Get next URL
+                    current_url = urls_to_visit.pop(0)
+                    
+                    # Skip if already visited
                     if current_url in visited_urls:
                         continue
                     
+                    # Add to visited
                     visited_urls.add(current_url)
-                    self.log(f"Visiting: {current_url}")
+                    pages_visited += 1
                     
-                    # Keep track of entity links found on this page
-                    horses_found = 0
-                    jockeys_found = 0
-                    trainers_found = 0
-                    races_found = 0
+                    # Save state periodically
+                    if pages_visited % save_interval == 0:
+                        state = {
+                            'visited_urls': visited_urls,
+                            'urls_to_visit': urls_to_visit,
+                            'last_url': current_url,
+                            'pages_visited': pages_visited,
+                            'discovered_count': len(discovered_urls),
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        if save_crawl_state(state):
+                            self.log(f"Saved crawl state at {pages_visited} pages visited")
                     
-                    try:
-                        # Add delay to avoid overloading the server
-                        time.sleep(0.2)
+                    # Update progress
+                    progress_pct = min(100, int((len(discovered_urls) / max_urls) * 100))
+                    self.progress_var.set(progress_pct)
+                    
+                    # Update UI periodically
+                    if pages_visited % 20 == 0 or len(discovered_urls) % 100 == 0:
+                        elapsed = time.time() - start_time
+                        stats_msg = (f"Visited: {pages_visited} pages, Found: {len(discovered_urls)} URLs, "
+                                    f"Queue: {len(urls_to_visit)}, Elapsed: {elapsed:.1f}s")
+                        self.crawl_stats_var.set(stats_msg)
+                        self.root.update()
                         
-                        # Make the request with enhanced headers
-                        response = requests.get(current_url, headers=HEADERS, allow_redirects=True)
+                        # Log progress
+                        self.log(stats_msg)
+                    
+                    # Add small delay to avoid overloading server
+                    time.sleep(random.uniform(0.3, 0.7))
+                    
+                    # Try to fetch the page
+                    try:
+                        pre_discovery_count = len(discovered_urls)
+                        
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                        }
+                        response = requests.get(current_url, headers=headers, timeout=10)
+                        
                         if response.status_code != 200:
-                            self.log(f"Failed to get {current_url}: {response.status_code}")
+                            self.log(f"Failed to fetch {current_url}: {response.status_code}")
                             continue
                         
-                        # Enhanced debugging
-                        self.log(f"Response URL (after redirects): {response.url}")
-                        self.log(f"Response content length: {len(response.text)}")
-                        
+                        # Parse the HTML
                         soup = BeautifulSoup(response.text, 'html.parser')
                         
-                        # Log page title
-                        page_title = soup.title.string if soup.title else "No title"
-                        self.log(f"Page title: {page_title}")
-                        
-                        # Special handling for race results pages - look for profile links
-                        is_race_page = '/racing/results/' in current_url and re.search(r'/\d{4}-\d{2}-\d{2}/', current_url)
-                        
+                        # Check if this is a race page and process entity links
+                        is_race_page = '/racing/results/' in current_url and get_url_type(current_url) == 'races'
                         if is_race_page:
-                            self.log("This is a race page - looking for entity profile links...")
-                            
-                            # Look for horse, jockey, and trainer links
-                            # Horse links
+                            # Find all horse links on race page
                             horse_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/horse/' in href)
+                            horse_count = 0
                             for link in horse_links:
-                                if process_url(link['href'], current_url, 'horses'):
-                                    horses_found += 1
+                                href = link.get('href')
+                                if process_url(href, current_url, 'horses'):
+                                    horse_count += 1
                             
-                            # Jockey links 
+                            # Find all jockey links
                             jockey_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/jockey/' in href)
+                            jockey_count = 0
                             for link in jockey_links:
-                                if process_url(link['href'], current_url, 'jockeys'):
-                                    jockeys_found += 1
+                                href = link.get('href')
+                                if process_url(href, current_url, 'jockeys'):
+                                    jockey_count += 1
                             
-                            # Trainer links
+                            # Find all trainer links
                             trainer_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/trainer/' in href)
+                            trainer_count = 0
                             for link in trainer_links:
-                                if process_url(link['href'], current_url, 'trainers'):
-                                    trainers_found += 1
+                                href = link.get('href')
+                                if process_url(href, current_url, 'trainers'):
+                                    trainer_count += 1
                             
-                            # Log found entity links
-                            self.log(f"Found on race page: {horses_found} horses, {jockeys_found} jockeys, {trainers_found} trainers")
+                            self.log(f"Race page {current_url}: found {horse_count} horses, {jockey_count} jockeys, {trainer_count} trainers")
                         
-                        # Find all links in the page (general case)
-                        links = soup.find_all('a', href=True)
-                        self.log(f"Found {len(links)} total links on the page")
+                        # Find all links on the page
+                        for link in soup.find_all('a', href=True):
+                            href = link.get('href')
+                            process_url(href, current_url)
                         
-                        # Debug first 10 links
-                        for i, link in enumerate(links[:10]):
-                            href = link.get('href', '')
-                            href_normalized = normalize_url(href) if href else ''
-                            self.log(f"Sample link {i+1}: {href} -> {href_normalized}")
+                        # Track discovery rate for saturation detection
+                        new_discoveries = len(discovered_urls) - pre_discovery_count
+                        discovery_window.append(new_discoveries)
                         
-                        # Process each link (standard crawl behavior)
-                        date_count = 0
-                        general_links_found = 0
+                        # Keep window at fixed size
+                        if len(discovery_window) > window_size:
+                            discovery_window.pop(0)
                         
-                        for link in links:
-                            href = link.get('href', '')
-                            if not href:
-                                continue
-                                
-                            # Normalize URL
-                            href = normalize_url(href)
-                            
-                            # Skip if not a Sporting Life URL
-                            if not href.startswith('https://www.sportinglife.com/'):
-                                continue
-                            
-                            # Check if it matches any of our target patterns
-                            match_type = get_url_type(href)
-                            
-                            # Handle date-only URLs separately
-                            if match_type is None and date_pattern.search(href.replace('https://www.sportinglife.com', '')):
-                                date_count += 1
-                                if href not in visited_urls and href not in queue:
-                                    queue.append(href)
-                                    self.log(f"Found date URL to follow: {href}")
-                                continue
-                            
-                            # Skip if no match to target patterns
-                            if match_type is None:
-                                continue
-                                
-                            # Skip if already processed or queued
-                            if href in discovered_urls or href in existing_urls:
-                                continue
-                            
-                            # Add to discovered URLs and queue
-                            discovered_urls.add(href)
-                            queue.append(href)
-                            url_count += 1
-                            general_links_found += 1
-                            
-                            if match_type == 'races':
-                                races_found += 1
-                            elif match_type == 'jockeys':
-                                jockeys_found += 1
-                            elif match_type == 'trainers':
-                                trainers_found += 1
-                            elif match_type == 'horses':
-                                horses_found += 1
-                            
-                            # Periodically update UI
-                            if url_count % 10 == 0:
-                                elapsed = time.time() - start_time
-                                stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
-                                self.crawl_stats_var.set(stats)
-                                self.root.update()
-                            
-                            # Check if we've hit the max
-                            if url_count >= max_urls:
+                        # Check for saturation when window is full
+                        if len(discovery_window) >= window_size:
+                            avg_discovery_rate = sum(discovery_window) / window_size
+                            if avg_discovery_rate < discovery_threshold and pages_visited > window_size * 2:
+                                self.log(f"Crawl saturation detected: discovery rate {avg_discovery_rate:.4f} below threshold {discovery_threshold}")
+                                self.log(f"Stopping crawl after {pages_visited} pages and {len(discovered_urls)} URLs discovered")
                                 break
-                        
-                        entities_found = horses_found + jockeys_found + trainers_found + races_found
-                        self.log(f"Page summary: {races_found} races, {horses_found} horses, {jockeys_found} jockeys, {trainers_found} trainers, {date_count} date pages")
-                        
-                        # If we didn't find any links to follow on this page, print a snippet of the page
-                        if entities_found == 0 and date_count == 0:
-                            try:
-                                # Get a sample of the HTML for debugging
-                                html_sample = response.text[:1000] + "..." if len(response.text) > 1000 else response.text
-                                self.log("HTML sample from page:")
-                                self.log(html_sample)
-                            except Exception as e:
-                                self.log(f"Error getting HTML sample: {str(e)}")
-                            
+                    
+                    except requests.RequestException as e:
+                        self.log(f"Error fetching {current_url}: {str(e)}")
                     except Exception as e:
                         self.log(f"Error processing {current_url}: {str(e)}")
-                        traceback.print_exc()
-                        continue
-                        
-                    # Check timeout every few URLs
-                    if len(visited_urls) % 5 == 0 and timeout_reached():
-                        self.log(f"Timeout reached after {time.time() - start_time:.1f} seconds. Stopping crawl.")
-                        break
                 
-                # Save discovered URLs to database
-                if discovered_urls:
-                    saved_count = self.save_urls_to_database(conn, list(discovered_urls))
-                    self.log(f"Saved {saved_count} URLs to database")
-                else:
-                    self.log("No matching URLs were found during the crawl.")
-                    
-                # If we didn't find any URLs at all, show a warning
-                if not discovered_urls and visited_urls:
-                    self.log("WARNING: No matching URLs found despite visiting pages. Check URL patterns or website structure.")
+                # Save final state
+                final_state = {
+                    'visited_urls': visited_urls,
+                    'urls_to_visit': urls_to_visit,
+                    'pages_visited': pages_visited,
+                    'discovered_count': len(discovered_urls),
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'completed': True
+                }
+                save_crawl_state(final_state)
                 
-                # Update UI with final stats
-                elapsed_time = time.time() - start_time
-                stats = f"Found {len(discovered_urls)} URLs in {elapsed_time:.1f} seconds"
-                self.crawl_stats_var.set(stats)
+                # Update URL statistics
+                self.update_url_stats()
                 
+                # Final statistics
+                elapsed = time.time() - start_time
+                self.log(f"Crawl completed in {elapsed:.1f} seconds")
+                self.log(f"Visited {pages_visited} pages")
+                self.log(f"Discovered {len(discovered_urls)} URLs")
+                
+                type_counts = {}
+                cursor.execute("SELECT type, COUNT(*) FROM urls GROUP BY type")
+                for row in cursor.fetchall():
+                    type_counts[row[0]] = row[1]
+                
+                self.log(f"URL counts by type: {type_counts}")
+                
+                # Set progress to 100%
+                self.progress_var.set(100)
+                self.crawl_stats_var.set(f"Completed: {len(discovered_urls)} URLs found")
+                
+                # Close database connection
                 conn.close()
-                self.log(f"Crawl completed. Found {len(discovered_urls)} URLs.")
                 
             except Exception as e:
-                self.log(f"Error during crawl: {str(e)}")
-                self.crawl_stats_var.set(f"Error: {str(e)}")
-                traceback.print_exc()
+                self.log(f"Error in crawler: {str(e)}")
+                self.log(traceback.format_exc())
         
         # Run crawler in a separate thread
-        threading.Thread(target=run_crawler).start()
+        threading.Thread(target=run_crawler, daemon=True).start()
     
     def scrape_urls(self):
         """
@@ -1501,6 +1504,65 @@ class CollectorUI:
         # Grand total
         ttk.Label(self.stats_frame, text=str(stats["totals"]["overall"]), 
                  width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
+
+def save_crawl_state(state, filename="crawl_state.json"):
+    """
+    Save crawl state to a JSON file for resuming later
+    
+    Args:
+        state (dict): Crawl state to save
+        filename (str): Filename to save to
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        import json
+        
+        # Convert sets to lists for JSON serialization
+        state_copy = state.copy()
+        if 'visited_urls' in state_copy:
+            state_copy['visited_urls'] = list(state_copy['visited_urls'])
+        if 'discovered_urls' in state_copy and isinstance(state_copy['discovered_urls'], set):
+            state_copy['discovered_urls'] = list(state_copy['discovered_urls'])
+            
+        with open(filename, 'w') as f:
+            json.dump(state_copy, f)
+        return True
+    except Exception as e:
+        print(f"Error saving crawl state: {str(e)}")
+        return False
+
+def load_crawl_state(filename="crawl_state.json"):
+    """
+    Load crawl state from a JSON file
+    
+    Args:
+        filename (str): Filename to load from
+        
+    Returns:
+        dict: Loaded crawl state or empty dict if not found/error
+    """
+    try:
+        import json
+        import os
+        
+        if not os.path.exists(filename):
+            return {}
+            
+        with open(filename, 'r') as f:
+            state = json.load(f)
+            
+        # Convert lists back to sets
+        if 'visited_urls' in state:
+            state['visited_urls'] = set(state['visited_urls'])
+        if 'discovered_urls' in state and isinstance(state['discovered_urls'], list):
+            state['discovered_urls'] = set(state['discovered_urls'])
+            
+        return state
+    except Exception as e:
+        print(f"Error loading crawl state: {str(e)}")
+        return {}
 
 # === Main Entry Point ===
 
