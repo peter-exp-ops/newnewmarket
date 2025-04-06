@@ -869,24 +869,40 @@ class CollectorUI:
                 queue = [base_url]
                 url_count = 0
                 
-                # Define URL patterns for each type
+                # Define URL patterns for each type - more lenient patterns
                 url_patterns = {
-                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+/'),
-                    'trainers': re.compile(r'/racing/profiles/trainer/\d+/'),
-                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/'),
-                    'horses': re.compile(r'/racing/profiles/horse/\d+/')
+                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+'),
+                    'trainers': re.compile(r'/racing/profiles/trainer/\d+'),
+                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}'),
+                    'horses': re.compile(r'/racing/profiles/horse/\d+')
                 }
                 
                 # Additional pattern for race results pages
                 race_results_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+')
                 
+                # Add debugging
+                self.log(f"Initial queue: {queue}")
+                self.log(f"Using patterns: {[p.pattern for p in url_patterns.values()]}")
+                
+                # Helper function to normalize URLs
+                def normalize_url(url):
+                    # Ensure it's an absolute URL
+                    if url.startswith('/'):
+                        url = 'https://www.sportinglife.com' + url
+                    # Remove trailing slash if present
+                    if url.endswith('/'):
+                        url = url[:-1]
+                    return url
+                
                 while queue and url_count < max_urls and not timeout_reached():
                     current_url = queue.pop(0)
+                    current_url = normalize_url(current_url)
                     
                     if current_url in visited_urls:
                         continue
                     
                     visited_urls.add(current_url)
+                    self.log(f"Visiting: {current_url}")
                     
                     try:
                         # Add delay to avoid overloading the server
@@ -901,14 +917,21 @@ class CollectorUI:
                         
                         # Find all links in the page
                         links = soup.find_all('a', href=True)
+                        self.log(f"Found {len(links)} links on the page")
+                        
+                        # Debug first 5 links
+                        for i, link in enumerate(links[:5]):
+                            self.log(f"Sample link {i+1}: {link['href']}")
+                        
+                        # Count how many links match our patterns
+                        matching_count = 0
                         
                         # Process each link
                         for link in links:
                             href = link['href']
                             
-                            # Ensure it's an absolute URL
-                            if href.startswith('/'):
-                                href = 'https://www.sportinglife.com' + href
+                            # Normalize URL
+                            href = normalize_url(href)
                             
                             # Skip if not a Sporting Life URL
                             if not href.startswith('https://www.sportinglife.com/'):
@@ -916,20 +939,25 @@ class CollectorUI:
                             
                             # Check if it matches any of our patterns
                             matched = False
+                            match_type = None
                             
                             # Check all patterns since we're crawling for all types
-                            for pattern in url_patterns.values():
+                            for type_name, pattern in url_patterns.items():
                                 if pattern.search(href):
                                     matched = True
+                                    match_type = type_name
                                     break
                             
                             # Also check race results pattern
-                            if race_results_pattern.search(href):
+                            if not matched and race_results_pattern.search(href):
                                 matched = True
+                                match_type = 'races'
                             
                             # Skip if no match
                             if not matched:
                                 continue
+                                
+                            matching_count += 1
                             
                             # Skip if already processed or queued
                             if href in discovered_urls or href in existing_urls:
@@ -939,9 +967,10 @@ class CollectorUI:
                             discovered_urls.add(href)
                             queue.append(href)
                             url_count += 1
+                            self.log(f"Found matching URL ({match_type}): {href}")
                             
                             # Periodically update UI
-                            if url_count % 10 == 0:
+                            if url_count % 10 == 0 or url_count == 1:  # Also update on first URL
                                 elapsed = time.time() - start_time
                                 stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
                                 self.crawl_stats_var.set(stats)
@@ -950,9 +979,12 @@ class CollectorUI:
                             # Check if we've hit the max
                             if url_count >= max_urls:
                                 break
+                        
+                        self.log(f"Page had {matching_count} links matching our patterns")
                             
                     except Exception as e:
                         self.log(f"Error processing {current_url}: {str(e)}")
+                        traceback.print_exc()
                         continue
                         
                     # Check timeout every few URLs
@@ -962,7 +994,8 @@ class CollectorUI:
                 
                 # Save discovered URLs to database
                 if discovered_urls:
-                    self.save_urls_to_database(conn, list(discovered_urls))
+                    saved_count = self.save_urls_to_database(conn, list(discovered_urls))
+                    self.log(f"Saved {saved_count} URLs to database")
                 
                 # Update UI with final stats
                 elapsed_time = time.time() - start_time
@@ -975,6 +1008,7 @@ class CollectorUI:
             except Exception as e:
                 self.log(f"Error during crawl: {str(e)}")
                 self.crawl_stats_var.set(f"Error: {str(e)}")
+                traceback.print_exc()
         
         # Run crawler in a separate thread
         threading.Thread(target=run_crawler).start()
