@@ -135,11 +135,51 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
             # "Result" text
             soup.find(string=re.compile(r'Result', re.IGNORECASE)),
             # Winner details
-            soup.find(string=re.compile(r'Winner', re.IGNORECASE))
+            soup.find(string=re.compile(r'Winner', re.IGNORECASE)),
+            # Winning time
+            soup.find(string=re.compile(r'Winning time', re.IGNORECASE)),
+            # Race position indicators (1st, 2nd, 3rd)
+            soup.find(string=re.compile(r'1st', re.IGNORECASE)),
+            # Weighed In text (indicates race is complete)
+            soup.find(string=re.compile(r'Weighed In', re.IGNORECASE))
         ]
         
         # Check if we found any result indicators
         return any(indicator is not None for indicator in result_indicators)
+    
+    # Special handling for the race results page
+    if data_type == 'races' and base_url == "https://www.sportinglife.com/racing/results/":
+        log("Special handling for race results page - scanning for date-based links first")
+        try:
+            # First, get the main results page
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(base_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for date-based links (e.g., calendar items, date tabs)
+                date_links = []
+                
+                # The site has date links for calendar navigation
+                for link in soup.find_all('a', href=True):
+                    # Look for date patterns in URLs
+                    href = link['href']
+                    if '/racing/results/' in href and re.search(r'/\d{4}-\d{2}-\d{2}', href):
+                        full_url = "https://www.sportinglife.com" + href if href.startswith('/') else href
+                        if full_url not in date_links:
+                            date_links.append(full_url)
+                
+                log(f"Found {len(date_links)} date-based links in the results page")
+                
+                # Add date links to the beginning of our crawl queue for better efficiency
+                for link in reversed(date_links):  # Reverse to maintain priority when prepended
+                    if link not in urls_to_visit:
+                        urls_to_visit.insert(0, link)
+        except Exception as e:
+            log(f"Error processing main results page: {str(e)}")
     
     active_pattern = url_patterns.get(data_type)
     if not active_pattern:
@@ -225,6 +265,13 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 # Not logging every failed URL
                 continue
             
+            # Check if page has an error message
+            error_text = "This component has encountered an error, please refresh the page"
+            if error_text.lower() in response.text.lower():
+                if random.random() < 0.2:  # Log ~20% of error pages to reduce verbosity
+                    log(f"Skipping page with error message: {current_url}")
+                continue
+            
             # For race URLs, check if results are published
             if data_type == 'races' and re.match(active_pattern, current_url):
                 if not has_published_results(response.text):
@@ -278,9 +325,13 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 if href in captured_urls and captured_urls[href] == 1:
                     continue
                 
-                # For race URLs, we need to check content before adding to discovered URLs
-                # but since we haven't visited the URL yet, we'll add it to urls_to_visit
-                # and let the main loop check if it has published results
+                # Special handling for race results URLs
+                if data_type == 'races':
+                    # Prioritize links that look like race result pages
+                    if re.match(active_pattern, href) and href not in discovered_urls and href not in urls_to_visit:
+                        # Add race result pages to the front of the queue for faster discovery
+                        urls_to_visit.insert(0, href)
+                        continue
                 
                 # Check if URL matches the pattern for the desired type
                 if re.match(active_pattern, href) and href not in discovered_urls:
@@ -296,7 +347,12 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
                 
                 # Add to visit queue if not already visited or queued
                 if href not in visited_urls and href not in urls_to_visit:
-                    urls_to_visit.append(href)
+                    # Special case for race results - prioritize date links
+                    if data_type == 'races' and '/racing/results/' in href and re.search(r'/\d{4}-\d{2}-\d{2}', href):
+                        # Add date links near the front of the queue
+                        urls_to_visit.insert(min(5, len(urls_to_visit)), href)
+                    else:
+                        urls_to_visit.append(href)
             
         except Exception as e:
             # Only log occasional errors to reduce verbosity
@@ -718,6 +774,234 @@ def scrape_horse_page(url):
         traceback.print_exc()
         return None
 
+def scrape_race_page(url):
+    """
+    Scrape a race results page to extract race and finishing order information
+    
+    Args:
+        url (str): URL of the race results page
+        
+    Returns:
+        dict: Extracted race data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract race ID from URL
+        # Example URL: https://www.sportinglife.com/racing/results/2018-12-30/santa-anita/506937/race-8-allowance-optional-claiming
+        race_id_match = re.search(r'/(\d+)/[\w-]+$', url)
+        if race_id_match:
+            race_id = race_id_match.group(1)
+        else:
+            race_id = None
+            
+        # Initialize race data dictionary
+        race_data = {
+            'id': race_id,
+            'url': url,
+            'title': None,
+            'course': None,
+            'date': None,
+            'time': None,
+            'distance': None,
+            'going': None,
+            'surface': None,
+            'class': None,
+            'age_restriction': None,
+            'runners': 0,
+            'winning_time': None,
+            'finishers': []
+        }
+        
+        # Extract race title
+        title_elem = soup.find('h1')
+        if title_elem:
+            race_data['title'] = title_elem.text.strip()
+        
+        # Extract race date and course from URL
+        date_course_match = re.search(r'results/(\d{4}-\d{2}-\d{2})/([\w-]+)', url)
+        if date_course_match:
+            race_data['date'] = date_course_match.group(1)
+            course_slug = date_course_match.group(2)
+            # Convert slug to proper name (replace hyphens with spaces and capitalize)
+            race_data['course'] = ' '.join(word.capitalize() for word in course_slug.split('-'))
+        
+        # Extract race details
+        # Look for a container with race details
+        race_details = {}
+        race_info_sections = soup.find_all(['div', 'section', 'ul'], class_=['raceInfo', 'race-info', 'race-details'])
+        
+        # Extract race info from typical section structure
+        for section in race_info_sections:
+            # Extract text content
+            section_text = section.get_text(separator=' ', strip=True)
+            
+            # Look for known patterns in the text
+            going_match = re.search(r'Going:\s*([^|]+)', section_text)
+            if going_match:
+                race_data['going'] = going_match.group(1).strip()
+                
+            surface_match = re.search(r'Surface:\s*([^|]+)', section_text)
+            if surface_match:
+                race_data['surface'] = surface_match.group(1).strip()
+                
+            distance_match = re.search(r'(\d+m\s*\d+f\s*\d+y)', section_text)
+            if distance_match:
+                race_data['distance'] = distance_match.group(1).strip()
+            
+            # Look for class info
+            class_match = re.search(r'Class\s*(\d+)', section_text)
+            if class_match:
+                race_data['class'] = class_match.group(1).strip()
+                
+            # Look for age restriction
+            age_match = re.search(r'(\d+YO(\s*(to|plus|only)|$))', section_text)
+            if age_match:
+                race_data['age_restriction'] = age_match.group(1).strip()
+                
+            # Look for number of runners
+            runners_match = re.search(r'(\d+)\s*Runners', section_text)
+            if runners_match:
+                race_data['runners'] = int(runners_match.group(1))
+                
+            # Look for winning time
+            time_match = re.search(r'Winning time:\s*([^|]+)', section_text)
+            if time_match:
+                race_data['winning_time'] = time_match.group(1).strip()
+                
+            # Extract race time (the time the race was run)
+            race_time_elem = soup.find(string=re.compile(r'\d{2}:\d{2}'))
+            if race_time_elem:
+                race_data['time'] = race_time_elem.strip()
+        
+        # Find the results table
+        results_table = soup.find('table')
+        if results_table:
+            # Find all rows in the table
+            rows = results_table.find_all('tr')
+            
+            # Process each row
+            for row in rows:
+                # Skip header rows
+                if row.find('th'):
+                    continue
+                    
+                # Extract finish position, horse name, jockey, trainer
+                cells = row.find_all('td')
+                if not cells:
+                    continue
+                    
+                # Initialize finisher data
+                finisher_data = {
+                    'position': None,
+                    'draw': None,
+                    'horse_name': None,
+                    'horse_id': None,
+                    'jockey_name': None,
+                    'jockey_id': None,
+                    'trainer_name': None,
+                    'trainer_id': None,
+                    'weight': None,
+                    'age': None,
+                    'odds': None,
+                    'distance_beaten': None
+                }
+                
+                # Extract data based on cell position
+                # This will vary depending on the table structure, so we need to be flexible
+                
+                # If we have a position cell (usually first cell)
+                if len(cells) > 0:
+                    pos_text = cells[0].get_text(strip=True)
+                    # Extract position (1st, 2nd, 3rd, etc.)
+                    pos_match = re.search(r'(\d+)(st|nd|rd|th)', pos_text)
+                    if pos_match:
+                        finisher_data['position'] = pos_match.group(0)
+                    elif pos_text.isdigit():
+                        finisher_data['position'] = pos_text
+                
+                # Extract horse name and ID
+                horse_cell = None
+                for cell in cells:
+                    if cell.find('a', href=re.compile(r'/racing/profiles/horse/\d+')):
+                        horse_cell = cell
+                        break
+                        
+                if horse_cell:
+                    horse_link = horse_cell.find('a', href=re.compile(r'/racing/profiles/horse/\d+'))
+                    if horse_link:
+                        finisher_data['horse_name'] = horse_link.get_text(strip=True)
+                        horse_id_match = re.search(r'/horse/(\d+)', horse_link['href'])
+                        if horse_id_match:
+                            finisher_data['horse_id'] = horse_id_match.group(1)
+                
+                # Extract jockey name and ID
+                jockey_cell = None
+                for cell in cells:
+                    if cell.find('a', href=re.compile(r'/racing/profiles/jockey/\d+')):
+                        jockey_cell = cell
+                        break
+                        
+                if jockey_cell:
+                    jockey_link = jockey_cell.find('a', href=re.compile(r'/racing/profiles/jockey/\d+'))
+                    if jockey_link:
+                        finisher_data['jockey_name'] = jockey_link.get_text(strip=True)
+                        jockey_id_match = re.search(r'/jockey/(\d+)', jockey_link['href'])
+                        if jockey_id_match:
+                            finisher_data['jockey_id'] = jockey_id_match.group(1)
+                
+                # Extract trainer name and ID
+                trainer_cell = None
+                for cell in cells:
+                    if cell.find('a', href=re.compile(r'/racing/profiles/trainer/\d+')):
+                        trainer_cell = cell
+                        break
+                        
+                if trainer_cell:
+                    trainer_link = trainer_cell.find('a', href=re.compile(r'/racing/profiles/trainer/\d+'))
+                    if trainer_link:
+                        finisher_data['trainer_name'] = trainer_link.get_text(strip=True)
+                        trainer_id_match = re.search(r'/trainer/(\d+)', trainer_link['href'])
+                        if trainer_id_match:
+                            finisher_data['trainer_id'] = trainer_id_match.group(1)
+                
+                # Extract odds
+                odds_cell = None
+                for i, cell in enumerate(cells):
+                    if re.search(r'\d+/\d+', cell.get_text()):
+                        odds_cell = cell
+                        break
+                        
+                if odds_cell:
+                    odds_text = odds_cell.get_text(strip=True)
+                    odds_match = re.search(r'(\d+/\d+|\d+/1|\d+-\d+|\d+\.\d+)', odds_text)
+                    if odds_match:
+                        finisher_data['odds'] = odds_match.group(1)
+                
+                # Add the finisher to the list if we have at least a horse name
+                if finisher_data['horse_name']:
+                    race_data['finishers'].append(finisher_data)
+        
+        # Update number of finishers if we found them
+        if race_data['finishers'] and not race_data['runners']:
+            race_data['runners'] = len(race_data['finishers'])
+        
+        # Check if we have basic race info
+        if race_data['title'] and race_data['course'] and race_data['date']:
+            return race_data
+        else:
+            print(f"Missing critical race information for URL: {url}")
+            print(f"Extracted data: {race_data}")
+            return None
+            
+    except Exception as e:
+        print(f"Error scraping race page {url}: {str(e)}")
+        traceback.print_exc()
+        return None
+
 def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callback=None, conn=None):
     """
     Scrape a limited number of URLs of a specific type
@@ -775,14 +1059,15 @@ def scrape_urls_by_type(urls, url_type, limit, log_callback=None, progress_callb
             elif url_type == 'horses':
                 log(f"Scraping horse data from: {url}")
                 data = scrape_horse_page(url)
-            # Add other types here when implemented
-            # elif url_type == 'races':
-            #     data = scrape_race_page(url)
+            elif url_type == 'races':
+                log(f"Scraping race data from: {url}")
+                data = scrape_race_page(url)
             
             if data:
                 scraped_data.append(data)
                 success = True
-                log(f"Successfully scraped {url_type} data: {data['name']}")
+                name_or_title = data.get('name', data.get('title', 'Unknown'))
+                log(f"Successfully scraped {url_type} data: {name_or_title}")
             else:
                 log(f"Failed to scrape data from {url}")
                 
