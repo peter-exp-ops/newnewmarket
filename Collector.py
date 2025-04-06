@@ -581,104 +581,252 @@ def filter_urls_by_type(urls, url_type):
 
 def scrape_race_page(url):
     """
-    Scrape a race page to extract race information
+    Scrape a race results page to extract race and finishing order information
     
     Args:
-        url (str): URL of race page
+        url (str): URL of the race results page
         
     Returns:
-        dict: Extracted race data or None if failed
+        dict: Extracted race data or None if scraping failed
     """
-    # Function implementation will go here
-    pass
+    # Placeholder function for race scraping
+    # This will be updated in a future version
+    return None
 
 def scrape_horse_page(url):
     """
-    Scrape a horse page to extract horse information
+    Scrape a horse profile page to extract horse information
     
     Args:
-        url (str): URL of horse page
+        url (str): URL of the horse profile page
         
     Returns:
-        dict: Extracted horse data or None if failed
+        dict: Extracted horse data or None if scraping failed
     """
-    # Function implementation will go here
-    pass
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract horse ID from URL
+        horse_id = int(url.split('/')[-1])
+        
+        # Extract horse name from the page header
+        horse_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not horse_name:
+            print(f"Could not find horse name at URL: {url}")
+            return None
+            
+        return {
+            'id': horse_id,
+            'name': horse_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping horse page {url}: {str(e)}")
+        return None
 
 def scrape_jockey_page(url):
     """
-    Scrape a jockey page to extract jockey information
+    Scrape a jockey profile page to extract jockey information
     
     Args:
-        url (str): URL of jockey page
+        url (str): URL of the jockey profile page
         
     Returns:
-        dict: Extracted jockey data or None if failed
+        dict: Extracted jockey data or None if scraping failed
     """
-    # Function implementation will go here
-    pass
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract jockey ID from URL
+        jockey_id = int(url.split('/')[-1])
+        
+        # Extract jockey name from the page header
+        jockey_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not jockey_name:
+            print(f"Could not find jockey name at URL: {url}")
+            return None
+            
+        return {
+            'id': jockey_id,
+            'name': jockey_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping jockey page {url}: {str(e)}")
+        return None
 
 def scrape_trainer_page(url):
     """
-    Scrape a trainer page to extract trainer information
+    Scrape a trainer profile page to extract trainer information
     
     Args:
-        url (str): URL of trainer page
+        url (str): URL of the trainer profile page
         
     Returns:
-        dict: Extracted trainer data or None if failed
+        dict: Extracted trainer data or None if scraping failed
     """
-    # Function implementation will go here
-    pass
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract trainer ID from URL
+        trainer_id = int(url.split('/')[-1])
+        
+        # Extract trainer name from the page header
+        trainer_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not trainer_name:
+            print(f"Could not find trainer name at URL: {url}")
+            return None
+            
+        return {
+            'id': trainer_id,
+            'name': trainer_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping trainer page {url}: {str(e)}")
+        return None
 
 def scrape_urls_by_type(urls, url_type, limit, conn=None, log_callback=None, progress_callback=None):
     """
-    Placeholder for URL scraping function - does not implement actual scraping
+    Scrape a list of URLs of a specific type
     
     Args:
         urls (list): List of URLs to scrape
-        url_type (str): Type of data ('races', 'horses', 'jockeys', 'trainers')
+        url_type (str): Type of URLs ('horses', 'jockeys', 'trainers', 'races')
         limit (int): Maximum number of URLs to scrape
-        conn (sqlite3.Connection): Database connection
-        log_callback (function): Callback function for logging
-        progress_callback (function): Callback function for updating progress
+        conn (sqlite3.Connection, optional): Database connection
+        log_callback (function, optional): Function to call for logging
+        progress_callback (function, optional): Function to call for progress updates
         
     Returns:
-        list: Empty list (no scraping implemented)
+        list: List of scraped data
     """
-    if log_callback:
-        log_callback("Scraping not implemented as requested")
+    # Initialize variables
+    results = []
+    count = 0
+    success_count = 0
     
-    # Update progress to 100% to indicate completion
-    if progress_callback:
-        progress_callback(len(urls), len(urls))
+    # Should we close the connection when done?
+    close_conn = False
+    if not conn:
+        conn = connect_to_database()
+        close_conn = True
     
-    # Mark URLs as processed in database (success = 1)
-    if conn:
+    # Define a default log function if none provided
+    if not log_callback:
+        log_callback = print
+        
+    # Limit the number of URLs to process
+    urls_to_process = urls[:min(limit, len(urls))]
+    total_urls = len(urls_to_process)
+    
+    log_callback(f"Starting to scrape {total_urls} {url_type} URLs...")
+    
+    # Process each URL
+    for i, url in enumerate(urls_to_process):
         try:
-            cursor = conn.cursor()
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Update progress if callback provided
+            if progress_callback:
+                progress_callback(i / total_urls * 100)
+                
+            log_callback(f"Scraping {url_type} URL ({i+1}/{total_urls}): {url}")
             
-            for i, url in enumerate(urls):
-                # Update URL status to processed
+            # Scrape based on URL type
+            data = None
+            if url_type == 'horses':
+                data = scrape_horse_page(url)
+            elif url_type == 'jockeys':
+                data = scrape_jockey_page(url)
+            elif url_type == 'trainers':
+                data = scrape_trainer_page(url)
+            elif url_type == 'races':
+                data = scrape_race_page(url)
+                
+            # Check if we got data
+            if data:
+                results.append(data)
+                success_count += 1
+                
+                # Update database status
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute(
-                    "UPDATE urls SET date_accessed = ?, status = 'processed' WHERE url = ?",
-                    (timestamp, url)
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "succeeded", url)
                 )
                 
-                # Update progress every few URLs
-                if progress_callback and i % 5 == 0:
-                    progress_callback(i + 1, len(urls))
+                # Save data to appropriate table
+                if url_type == 'horses':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO horses (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                elif url_type == 'jockeys':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO jockeys (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                elif url_type == 'trainers':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO trainers (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                
+                conn.commit()
+                log_callback(f"Saved {url_type[:-1]} {data.get('name', '')}")
+            else:
+                # Update database with failed status
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "failed", url)
+                )
+                conn.commit()
+                log_callback(f"Failed to scrape {url_type} URL: {url}")
+                
+            # Increment count
+            count += 1
             
-            conn.commit()
-            
-            if log_callback:
-                log_callback(f"Marked {len(urls)} URLs as processed in the database")
         except Exception as e:
-            if log_callback:
-                log_callback(f"Error updating URL status: {str(e)}")
+            log_callback(f"Error processing {url}: {str(e)}")
+            # Update database with failed status
+            try:
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "failed", url)
+                )
+                conn.commit()
+            except Exception as db_error:
+                log_callback(f"Error updating URL status: {str(db_error)}")
+                
+            count += 1
     
-    return []  # Return empty list as no actual scraping is performed
+    # Close connection if we opened it
+    if close_conn and conn:
+        conn.close()
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(100)
+        
+    log_callback(f"Finished scraping {count} {url_type} URLs. Successfully scraped: {success_count}")
+    
+    return results
 
 def process_scraped_data(conn, data, data_type):
     """
@@ -1620,7 +1768,7 @@ class CollectorUI:
             dict: Extracted trainer data or None if scraping failed
         """
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(url, headers=HEADERS)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -1632,7 +1780,7 @@ class CollectorUI:
             trainer_name = soup.find('h1').text.strip() if soup.find('h1') else None
             
             if not trainer_name:
-                self.log(f"Could not find trainer name at URL: {url}")
+                print(f"Could not find trainer name at URL: {url}")
                 return None
                 
             return {
@@ -1641,7 +1789,7 @@ class CollectorUI:
             }
             
         except Exception as e:
-            self.log(f"Error scraping trainer page {url}: {str(e)}")
+            print(f"Error scraping trainer page {url}: {str(e)}")
             return None
     
     def scrape_jockey_page(self, url):
@@ -1655,7 +1803,7 @@ class CollectorUI:
             dict: Extracted jockey data or None if scraping failed
         """
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(url, headers=HEADERS)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -1667,7 +1815,7 @@ class CollectorUI:
             jockey_name = soup.find('h1').text.strip() if soup.find('h1') else None
             
             if not jockey_name:
-                self.log(f"Could not find jockey name at URL: {url}")
+                print(f"Could not find jockey name at URL: {url}")
                 return None
                 
             return {
@@ -1676,7 +1824,7 @@ class CollectorUI:
             }
             
         except Exception as e:
-            self.log(f"Error scraping jockey page {url}: {str(e)}")
+            print(f"Error scraping jockey page {url}: {str(e)}")
             return None
     
     def scrape_horse_page(self, url):
@@ -1690,7 +1838,7 @@ class CollectorUI:
             dict: Extracted horse data or None if scraping failed
         """
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(url, headers=HEADERS)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -1702,111 +1850,16 @@ class CollectorUI:
             horse_name = soup.find('h1').text.strip() if soup.find('h1') else None
             
             if not horse_name:
-                self.log(f"Could not find horse name at URL: {url}")
+                print(f"Could not find horse name at URL: {url}")
                 return None
                 
-            # Initialize horse data dictionary
-            horse_data = {
+            return {
                 'id': horse_id,
-                'name': horse_name,
-                'foaled': None,
-                'sex': None,
-                'trainer': None,
-                'trainer_id': None,
-                'sire': None,
-                'sire_id': None,
-                'dam': None,
-                'dam_id': None,
-                'owner': None
+                'name': horse_name
             }
             
-            # Look for details in horse profile table
-            # Most horse profile pages have a table with key details
-            detail_tables = soup.find_all('table')
-            for table in detail_tables:
-                rows = table.find_all('tr')
-                for row in rows:
-                    cols = row.find_all(['td', 'th'])
-                    if len(cols) >= 2:
-                        label = cols[0].text.strip().lower()
-                        value = cols[1].text.strip()
-                        
-                        if 'age' in label or 'foaled' in label:
-                            # Extract foaled date from format like "12 (Foaled 17th September 2013)"
-                            foaled_match = re.search(r'Foaled\s+(.+)\)', value)
-                            if foaled_match:
-                                horse_data['foaled'] = foaled_match.group(1).strip()
-                        elif 'trainer' in label:
-                            horse_data['trainer'] = value
-                            # Try to extract trainer ID from any links
-                            trainer_link = cols[1].find('a', href=True)
-                            if trainer_link and 'profiles/trainer' in trainer_link['href']:
-                                try:
-                                    trainer_id = int(trainer_link['href'].split('/')[-1])
-                                    horse_data['trainer_id'] = trainer_id
-                                except (ValueError, IndexError):
-                                    pass
-                        elif 'sex' in label:
-                            horse_data['sex'] = value
-                        elif 'sire' in label:
-                            horse_data['sire'] = value
-                            # Try to extract sire ID from any links
-                            sire_link = cols[1].find('a', href=True)
-                            if sire_link and 'profiles/horse' in sire_link['href']:
-                                try:
-                                    sire_id = int(sire_link['href'].split('/')[-1])
-                                    horse_data['sire_id'] = sire_id
-                                except (ValueError, IndexError):
-                                    pass
-                        elif 'dam' in label:
-                            horse_data['dam'] = value
-                            # Try to extract dam ID from any links
-                            dam_link = cols[1].find('a', href=True)
-                            if dam_link and 'profiles/horse' in dam_link['href']:
-                                try:
-                                    dam_id = int(dam_link['href'].split('/')[-1])
-                                    horse_data['dam_id'] = dam_id
-                                except (ValueError, IndexError):
-                                    pass
-                        elif 'owner' in label:
-                            horse_data['owner'] = value
-            
-            # If we still don't have complete information, try alternative methods
-            if not any([horse_data['foaled'], horse_data['sex'], horse_data['trainer']]):
-                # Look for specific information in different page layouts
-                self.log(f"Using fallback methods to extract horse details for {horse_name}")
-                
-                # Try to find details in sections with dt/dd or label/value pairs
-                detail_sections = soup.find_all(['dl', 'div', 'ul'], class_=['details', 'info', 'profile'])
-                for section in detail_sections:
-                    # Look for dt/dd pairs
-                    terms = section.find_all('dt')
-                    for term in terms:
-                        label = term.text.strip().lower()
-                        value_elem = term.find_next('dd')
-                        if value_elem:
-                            value = value_elem.text.strip()
-                            
-                            if 'age' in label or 'foaled' in label:
-                                foaled_match = re.search(r'Foaled\s+(.+)\)', value)
-                                if foaled_match:
-                                    horse_data['foaled'] = foaled_match.group(1).strip()
-                            elif 'trainer' in label:
-                                horse_data['trainer'] = value
-                            elif 'sex' in label:
-                                horse_data['sex'] = value
-                            elif 'sire' in label:
-                                horse_data['sire'] = value
-                            elif 'dam' in label:
-                                horse_data['dam'] = value
-                            elif 'owner' in label:
-                                horse_data['owner'] = value
-            
-            # Return the data even if incomplete - we might have at least the name
-            return horse_data
-            
         except Exception as e:
-            self.log(f"Error scraping horse page {url}: {str(e)}")
+            print(f"Error scraping horse page {url}: {str(e)}")
             return None
     
     def save_entity_to_database(self, conn, data, data_type):
@@ -1900,63 +1953,6 @@ class CollectorUI:
             self.log(f"Error saving {data_type} data: {str(e)}")
             conn.rollback()
             return False
-
-def save_crawl_state(state, filename="crawl_state.json"):
-    """
-    Save crawl state to a file
-    
-    Args:
-        state (dict): Crawl state
-        filename (str): File to save state to
-        
-    Returns:
-        bool: True if state was saved successfully
-    """
-    try:
-        # Convert visited_urls and urls_to_visit to lists
-        state_copy = state.copy()
-        if 'visited_urls' in state_copy:
-            state_copy['visited_urls'] = list(state_copy['visited_urls'])
-        if 'urls_to_visit' in state_copy:
-            state_copy['urls_to_visit'] = list(state_copy['urls_to_visit'])
-        
-        with open(filename, 'w') as f:
-            json.dump(state_copy, f)
-        return True
-    except Exception as e:
-        print(f"Error saving crawl state: {str(e)}")
-        return False
-
-def load_crawl_state(filename="crawl_state.json"):
-    """
-    Load crawl state from a file
-    
-    Args:
-        filename (str): File to load state from
-        
-    Returns:
-        dict: Crawl state or None if file doesn't exist
-    """
-    try:
-        import json
-        
-        # Check if file exists
-        if not os.path.isfile(filename):
-            return None
-        
-        with open(filename, 'r') as f:
-            state = json.load(f)
-            
-        # Convert lists back to sets
-        if 'visited_urls' in state:
-            state['visited_urls'] = set(state['visited_urls'])
-        if 'urls_to_visit' in state:
-            state['urls_to_visit'] = list(state['urls_to_visit'])
-        
-        return state
-    except Exception as e:
-        print(f"Error loading crawl state: {str(e)}")
-        return None
 
 def delete_crawl_state_file(filename="crawl_state.json"):
     """
