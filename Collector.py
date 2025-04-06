@@ -857,6 +857,46 @@ class CollectorUI:
                             return type_name
                     return None
                 
+                # Helper function to process discovered URL
+                def process_url(href, source_url, url_type=None):
+                    if not href or href == '#':
+                        return False
+                        
+                    # Normalize URL
+                    href = normalize_url(href)
+                    
+                    # Skip if not a Sporting Life URL
+                    if not href.startswith('https://www.sportinglife.com/'):
+                        return False
+                    
+                    # Detect URL type if not provided
+                    if url_type is None:
+                        url_type = get_url_type(href)
+                        
+                    # Skip if no match to target patterns
+                    if url_type is None:
+                        return False
+                        
+                    # Skip if already processed or queued
+                    if href in discovered_urls or href in existing_urls:
+                        return False
+                    
+                    # Add to discovered URLs and queue
+                    discovered_urls.add(href)
+                    queue.append(href)
+                    nonlocal url_count
+                    url_count += 1
+                    self.log(f"Found matching URL ({url_type}): {href} from {source_url}")
+                    
+                    # Periodically update UI
+                    if url_count % 10 == 0 or url_count == 1:  # Also update on first URL
+                        elapsed = time.time() - start_time
+                        stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
+                        self.crawl_stats_var.set(stats)
+                        self.root.update()
+                    
+                    return True
+                
                 while queue and url_count < max_urls and not timeout_reached():
                     current_url = queue.pop(0)
                     current_url = normalize_url(current_url)
@@ -866,6 +906,12 @@ class CollectorUI:
                     
                     visited_urls.add(current_url)
                     self.log(f"Visiting: {current_url}")
+                    
+                    # Keep track of entity links found on this page
+                    horses_found = 0
+                    jockeys_found = 0
+                    trainers_found = 0
+                    races_found = 0
                     
                     try:
                         # Add delay to avoid overloading the server
@@ -887,21 +933,48 @@ class CollectorUI:
                         page_title = soup.title.string if soup.title else "No title"
                         self.log(f"Page title: {page_title}")
                         
-                        # Find all links in the page
+                        # Special handling for race results pages - look for profile links
+                        is_race_page = '/racing/results/' in current_url and re.search(r'/\d{4}-\d{2}-\d{2}/', current_url)
+                        
+                        if is_race_page:
+                            self.log("This is a race page - looking for entity profile links...")
+                            
+                            # Look for horse, jockey, and trainer links
+                            # Horse links
+                            horse_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/horse/' in href)
+                            for link in horse_links:
+                                if process_url(link['href'], current_url, 'horses'):
+                                    horses_found += 1
+                            
+                            # Jockey links 
+                            jockey_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/jockey/' in href)
+                            for link in jockey_links:
+                                if process_url(link['href'], current_url, 'jockeys'):
+                                    jockeys_found += 1
+                            
+                            # Trainer links
+                            trainer_links = soup.find_all('a', href=lambda href: href and '/racing/profiles/trainer/' in href)
+                            for link in trainer_links:
+                                if process_url(link['href'], current_url, 'trainers'):
+                                    trainers_found += 1
+                            
+                            # Log found entity links
+                            self.log(f"Found on race page: {horses_found} horses, {jockeys_found} jockeys, {trainers_found} trainers")
+                        
+                        # Find all links in the page (general case)
                         links = soup.find_all('a', href=True)
-                        self.log(f"Found {len(links)} links on the page")
+                        self.log(f"Found {len(links)} total links on the page")
                         
                         # Debug first 10 links
                         for i, link in enumerate(links[:10]):
                             href = link.get('href', '')
-                            href_normalized = normalize_url(href)
+                            href_normalized = normalize_url(href) if href else ''
                             self.log(f"Sample link {i+1}: {href} -> {href_normalized}")
                         
-                        # Count how many links match our patterns
-                        matching_count = 0
+                        # Process each link (standard crawl behavior)
                         date_count = 0
+                        general_links_found = 0
                         
-                        # Process each link
                         for link in links:
                             href = link.get('href', '')
                             if not href:
@@ -929,8 +1002,6 @@ class CollectorUI:
                             if match_type is None:
                                 continue
                                 
-                            matching_count += 1
-                            
                             # Skip if already processed or queued
                             if href in discovered_urls or href in existing_urls:
                                 continue
@@ -939,10 +1010,19 @@ class CollectorUI:
                             discovered_urls.add(href)
                             queue.append(href)
                             url_count += 1
-                            self.log(f"Found matching URL ({match_type}): {href}")
+                            general_links_found += 1
+                            
+                            if match_type == 'races':
+                                races_found += 1
+                            elif match_type == 'jockeys':
+                                jockeys_found += 1
+                            elif match_type == 'trainers':
+                                trainers_found += 1
+                            elif match_type == 'horses':
+                                horses_found += 1
                             
                             # Periodically update UI
-                            if url_count % 10 == 0 or url_count == 1:  # Also update on first URL
+                            if url_count % 10 == 0:
                                 elapsed = time.time() - start_time
                                 stats = f"Found {url_count} URLs in {elapsed:.1f} seconds"
                                 self.crawl_stats_var.set(stats)
@@ -952,10 +1032,11 @@ class CollectorUI:
                             if url_count >= max_urls:
                                 break
                         
-                        self.log(f"Page had {matching_count} matching target URLs and {date_count} date pages to follow")
+                        entities_found = horses_found + jockeys_found + trainers_found + races_found
+                        self.log(f"Page summary: {races_found} races, {horses_found} horses, {jockeys_found} jockeys, {trainers_found} trainers, {date_count} date pages")
                         
                         # If we didn't find any links to follow on this page, print a snippet of the page
-                        if matching_count == 0 and date_count == 0:
+                        if entities_found == 0 and date_count == 0:
                             try:
                                 # Get a sample of the HTML for debugging
                                 html_sample = response.text[:1000] + "..." if len(response.text) > 1000 else response.text
