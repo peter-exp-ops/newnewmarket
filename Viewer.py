@@ -18,19 +18,7 @@ class RacingDataHandler(http.server.SimpleHTTPRequestHandler):
     
     def do_GET(self):
         """Handle GET requests"""
-        parsed_path = urllib.parse.urlparse(self.path)
-        
-        # Check if this is a refresh request
-        if parsed_path.path == '/refresh':
-            # Generate a new report
-            generate_html_report()
-            # Redirect back to the main page
-            self.send_response(302)  # Redirect
-            self.send_header('Location', '/viewer.html')
-            self.end_headers()
-            return
-            
-        # Otherwise, handle normally
+        # Handle all requests with the standard handler
         return http.server.SimpleHTTPRequestHandler.do_GET(self)
     
     def log_message(self, format, *args):
@@ -131,9 +119,6 @@ def generate_html_report():
                     border-radius: 4px;
                     padding: 15px;
                     margin-bottom: 20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
                 }}
                 .refresh-button {{
                     background-color: #4c6ef5;
@@ -285,7 +270,6 @@ def generate_html_report():
                         <p>Tables in database: {', '.join(table_names)}</p>
                         <p>Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                     </div>
-                    <a href="/refresh" class="refresh-button">Refresh Data</a>
                 </div>
         """
         
