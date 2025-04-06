@@ -20,6 +20,7 @@ import random
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog, StringVar
 import traceback
+import platform
 
 # === Database Connection Functions ===
 
@@ -1024,9 +1025,58 @@ class ScraperUI:
     
     def setup_ui(self):
         """Set up the UI components"""
-        # Create main frame with padding
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Create a canvas with scrollbar for the main content
+        self.main_canvas = tk.Canvas(self.root)
+        self.main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Add a scrollbar to the canvas
+        self.scrollbar = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.main_canvas.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Configure the canvas to use the scrollbar
+        self.main_canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.main_canvas.bind('<Configure>', lambda e: self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all")))
+        
+        # Create the main frame inside the canvas
+        main_frame = ttk.Frame(self.main_canvas, padding="10")
+        self.main_canvas.create_window((0, 0), window=main_frame, anchor="nw")
+        
+        # Add cross-platform mouse wheel scrolling
+        def _on_mousewheel_windows(event):
+            # For Windows
+            self.main_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        def _on_mousewheel_macos(event):
+            # For macOS
+            self.main_canvas.yview_scroll(int(-1*event.delta), "units")
+            
+        def _on_button4(event):
+            # Scroll up (Linux)
+            self.main_canvas.yview_scroll(-1, "units")
+            
+        def _on_button5(event):
+            # Scroll down (Linux)
+            self.main_canvas.yview_scroll(1, "units")
+            
+        # Bind mousewheel event based on platform
+        system = platform.system().lower()
+        if system == 'windows':
+            self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel_windows)
+        elif system == 'darwin':  # macOS
+            self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel_macos)
+        else:  # Linux and other Unix
+            self.main_canvas.bind_all("<Button-4>", _on_button4)
+            self.main_canvas.bind_all("<Button-5>", _on_button5)
+            
+        # Store the event bindings to unbind later
+        self.event_bindings = {
+            "<MouseWheel>": _on_mousewheel_windows if system == 'windows' else _on_mousewheel_macos,
+            "<Button-4>": _on_button4,
+            "<Button-5>": _on_button5
+        }
+        
+        # Set up proper cleanup when window closes
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # Connection section
         conn_frame = ttk.LabelFrame(main_frame, text="Database Connection", padding="10")
@@ -1331,7 +1381,8 @@ class ScraperUI:
     def estimate_url_count(self, url_type):
         """
         Estimate the upper bound of valid URLs for a given type
-        using a binary search approach to find the highest valid ID
+        using a binary search approach to find the highest valid ID.
+        Runs 3 times with different random seeds for better accuracy.
         
         Args:
             url_type (str): Type of URLs to estimate ('jockeys', 'horses', 'trainers')
@@ -1394,62 +1445,103 @@ class ScraperUI:
                 self.log_message(f"Error checking URL {url}: {str(e)}")
                 return False
         
-        try:
-            # Binary search to find the highest valid ID
-            low = 1  # Start with ID 1
-            high = 100000  # Initial high guess
-            last_valid = 0
+        # Function to perform a single binary search estimation with a given seed
+        def estimate_with_seed(seed):
+            random.seed(seed)
+            self.log_message(f"Starting estimation run with seed {seed}")
             
-            # Check if ID 1 is valid
-            if not is_valid_url(f"{base_url}1"):
-                self.log_message(f"Error: Basic {url_type} profile page (ID 1) is not accessible. The site may be down or the URL structure changed.")
-                if url_type == 'jockeys':
-                    self.jockey_estimate_var.set("Error")
-                elif url_type == 'horses':
-                    self.horse_estimate_var.set("Error")
-                elif url_type == 'trainers':
-                    self.trainer_estimate_var.set("Error") 
-                return
-            
-            # Perform binary search
-            while low <= high:
-                mid = (low + high) // 2
+            try:
+                # Binary search to find the highest valid ID
+                low = 1  # Always start the range from 1
+                high = 100000  # Initial high guess
+                last_valid = 0
                 
-                # Add some delay to avoid overwhelming the server
-                time.sleep(0.3)
+                # First test the seed number itself (if within reasonable range)
+                test_id = min(seed, high)  # Use seed as initial test point if reasonable
+                self.log_message(f"Testing seed value as initial point: ID {test_id}")
                 
-                # Check if mid ID is valid
-                url_to_check = f"{base_url}{mid}"
-                is_valid = is_valid_url(url_to_check)
-                
-                # Log periodically (not on every check to avoid cluttering the log)
-                if mid % 1000 == 0 or high - low < 100:
-                    self.log_message(f"Testing {url_type} ID: {mid} (range: {low}-{high}), valid: {is_valid}")
-                
-                # Update UI
-                self.root.update_idletasks()
-                
-                # If valid, search higher
-                if is_valid:
-                    last_valid = mid
-                    low = mid + 1
-                # If invalid, search lower
+                # Check if the seed ID is valid
+                if is_valid_url(f"{base_url}{test_id}"):
+                    last_valid = test_id
+                    # If valid, search higher
+                    low = test_id + 1
+                    self.log_message(f"Seed ID {test_id} is valid - searching higher")
                 else:
-                    high = mid - 1
-            
-            # After search completes, last_valid contains our estimate
-            if last_valid > 0:
-                self.log_message(f"Estimated upper bound for {url_type}: {last_valid}")
+                    # If seed ID is not valid, first verify ID 1 is valid as a sanity check
+                    if not is_valid_url(f"{base_url}1"):
+                        self.log_message(f"Error: Basic {url_type} profile page (ID 1) is not accessible with seed {seed}.")
+                        return 0
+                    # Then set high to be below the seed
+                    high = test_id - 1
+                    self.log_message(f"Seed ID {test_id} is not valid - searching lower")
                 
-                # Update the appropriate variable
+                # Perform binary search
+                while low <= high:
+                    mid = (low + high) // 2
+                    # Slightly randomize where we check in the range
+                    if random.random() < 0.1:
+                        mid = random.randint(low, high)
+                    
+                    # Add some delay to avoid overwhelming the server
+                    time.sleep(0.2 + random.random() * 0.2)  # 0.2-0.4 sec delay
+                    
+                    # Check if mid ID is valid
+                    url_to_check = f"{base_url}{mid}"
+                    is_valid = is_valid_url(url_to_check)
+                    
+                    # Log periodically (not on every check to avoid cluttering the log)
+                    if mid % 1000 == 0 or high - low < 100:
+                        self.log_message(f"Run {seed}: Testing {url_type} ID: {mid} (range: {low}-{high}), valid: {is_valid}")
+                    
+                    # Update UI
+                    self.root.update_idletasks()
+                    
+                    # If valid, search higher
+                    if is_valid:
+                        last_valid = mid
+                        low = mid + 1
+                    # If invalid, search lower
+                    else:
+                        high = mid - 1
+                
+                if last_valid > 0:
+                    self.log_message(f"Run {seed}: Found highest valid ID: {last_valid}")
+                return last_valid
+                
+            except Exception as e:
+                self.log_message(f"Error during estimation run {seed}: {str(e)}")
+                return 0
+        
+        try:
+            # Run the estimation 3 times with different seeds
+            # Using larger, more spread out seed values to better sample the ID space
+            seeds = [10000, 50000, 90000]  # Different seeds covering low, mid, and high ranges
+            estimates = []
+            
+            for seed in seeds:
+                estimate = estimate_with_seed(seed)
+                if estimate > 0:
+                    estimates.append(estimate)
+            
+            # Get the highest estimate as our upper bound
+            if estimates:
+                max_estimate = max(estimates)
+                avg_estimate = sum(estimates) / len(estimates)
+                
+                self.log_message(f"Completed {len(estimates)} estimation runs.")
+                self.log_message(f"Estimates: {estimates}")
+                self.log_message(f"Maximum (upper bound) estimate: {max_estimate}")
+                self.log_message(f"Average estimate: {avg_estimate:.1f}")
+                
+                # Update the appropriate variable with the maximum estimate
                 if url_type == 'jockeys':
-                    self.jockey_estimate_var.set(f"~{last_valid:,}")
+                    self.jockey_estimate_var.set(f"~{max_estimate:,}")
                 elif url_type == 'horses':
-                    self.horse_estimate_var.set(f"~{last_valid:,}")
+                    self.horse_estimate_var.set(f"~{max_estimate:,}")
                 elif url_type == 'trainers':
-                    self.trainer_estimate_var.set(f"~{last_valid:,}")
+                    self.trainer_estimate_var.set(f"~{max_estimate:,}")
             else:
-                self.log_message(f"Could not find any valid {url_type} IDs.")
+                self.log_message(f"Could not find any valid {url_type} IDs across all estimation runs.")
                 # Update the appropriate variable
                 if url_type == 'jockeys':
                     self.jockey_estimate_var.set("No valid IDs found")
@@ -1459,7 +1551,7 @@ class ScraperUI:
                     self.trainer_estimate_var.set("No valid IDs found")
                 
         except Exception as e:
-            self.log_message(f"Error during estimation: {str(e)}")
+            self.log_message(f"Error during estimation process: {str(e)}")
             
             # Update the appropriate variable to show error
             if url_type == 'jockeys':
@@ -1502,6 +1594,29 @@ class ScraperUI:
         except Exception as e:
             self.log_message(f"Error updating database counts: {str(e)}")
             messagebox.showerror("Count Error", f"Failed to update database counts: {str(e)}")
+
+    def on_close(self):
+        """Clean up resources when the window is closed"""
+        # Disable the delete window protocol to prevent multiple calls
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
+        
+        # Unbind mouse wheel events
+        for event, handler in self.event_bindings.items():
+            try:
+                self.main_canvas.unbind_all(event)
+            except:
+                pass
+        
+        # Close database connection if it exists
+        if hasattr(self, 'conn') and self.conn is not None:
+            try:
+                self.conn.close()
+                self.log_message("Database connection closed.")
+            except:
+                pass
+        
+        # Destroy the root window
+        self.root.destroy()
 
 # === Main Entry Point ===
 
