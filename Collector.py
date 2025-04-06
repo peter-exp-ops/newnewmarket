@@ -968,13 +968,13 @@ class CollectorUI:
         """
         Crawl the website to find URLs of races, jockeys, trainers, and horses.
         URLs are saved to the database with status="unprocessed".
+        State is inferred from the database rather than an external file.
         """
         base_url = self.base_url_var.get()
         max_urls = self.max_urls_var.get()
         timeout_mins = self.timeout_var.get()
         saturation_threshold = self.saturation_var.get()
         window_size = self.window_size_var.get()
-        resume_crawl = True  # Add option to resume if a saved state exists
         
         def run_crawler():
             try:
@@ -1001,25 +1001,36 @@ class CollectorUI:
                 
                 self.check_database_structure()
                 
-                # Get existing URLs from database to avoid duplicates
+                # Get existing URLs from database
                 cursor = conn.cursor()
-                cursor.execute("SELECT url, status FROM urls")
-                existing_urls = {row[0]: row[1] for row in cursor.fetchall()}
+                cursor.execute("SELECT url, status, type FROM urls")
+                url_data = cursor.fetchall()
                 
-                # Try to load saved state if resume is enabled
-                crawl_state = {}
-                if resume_crawl:
-                    crawl_state = load_crawl_state()
-                    if crawl_state:
-                        self.log(f"Loaded saved crawl state with {len(crawl_state.get('visited_urls', []))} visited and {len(crawl_state.get('urls_to_visit', []))} pending URLs")
+                # Prepare data structures
+                existing_urls = {row[0]: row[1] for row in url_data}
+                visited_urls = set()
+                discovered_urls = []
                 
-                # Initialize or resume crawl state
-                visited_urls = crawl_state.get('visited_urls', set())
-                discovered_urls = []  # We'll track these as we go
-                urls_to_visit = crawl_state.get('urls_to_visit', [base_url])
+                # Initialize visited_urls based on processed URLs in database
+                for url, status, _ in url_data:
+                    if status in ['succeeded', 'failed', 'processed']:
+                        visited_urls.add(url)
                 
+                # Determine URLs to visit (unprocessed URLs + base_url if needed)
+                urls_to_visit = [
+                    row[0] for row in url_data 
+                    if row[1] == 'unprocessed' and row[0] not in visited_urls
+                ]
+                
+                # Always ensure base_url is in the queue if it's not already visited
+                if base_url not in visited_urls and base_url not in urls_to_visit:
+                    urls_to_visit.insert(0, base_url)
+                
+                self.log(f"Loaded crawl state from database: {len(visited_urls)} visited URLs, {len(urls_to_visit)} URLs to visit")
+                
+                # If no URLs to visit, start with base_url
                 if not urls_to_visit:
-                    urls_to_visit = [base_url]  # Ensure we have a starting point
+                    urls_to_visit = [base_url]
                 
                 # Define URL patterns for each type
                 url_patterns = {
@@ -1123,18 +1134,7 @@ class CollectorUI:
                     visited_urls.add(current_url)
                     pages_visited += 1
                     
-                    # Save state periodically
-                    if pages_visited % save_interval == 0:
-                        state = {
-                            'visited_urls': visited_urls,
-                            'urls_to_visit': urls_to_visit,
-                            'last_url': current_url,
-                            'pages_visited': pages_visited,
-                            'discovered_count': len(discovered_urls),
-                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                        if save_crawl_state(state):
-                            self.log(f"Saved crawl state at {pages_visited} pages visited")
+                    # URLs automatically saved to database as discovered
                     
                     # Update progress
                     progress_pct = min(100, int((len(discovered_urls) / max_urls) * 100))
@@ -1156,6 +1156,11 @@ class CollectorUI:
                         
                         # Log progress
                         self.log(stats_msg)
+                    
+                    # Log progress periodically at page intervals
+                    if pages_visited % 100 == 0:
+                        # No need to save state to file - using database for persistence
+                        self.log(f"Progress: {pages_visited} pages visited, {len(discovered_urls)} URLs discovered to database")
                     
                     # Add small delay to avoid overloading server
                     time.sleep(random.uniform(0.3, 0.7))
@@ -1241,16 +1246,7 @@ class CollectorUI:
                     except Exception as e:
                         self.log(f"Error processing {current_url}: {str(e)}")
                 
-                # Save final state
-                final_state = {
-                    'visited_urls': visited_urls,
-                    'urls_to_visit': urls_to_visit,
-                    'pages_visited': pages_visited,
-                    'discovered_count': len(discovered_urls),
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'completed': True
-                }
-                save_crawl_state(final_state)
+                # Database contains all discovered URLs - state is preserved there for future crawls
                 
                 # Update URL statistics
                 self.update_url_stats()
@@ -1976,6 +1972,22 @@ def load_crawl_state(filename="crawl_state.json"):
     except Exception as e:
         print(f"Error loading crawl state: {str(e)}")
         return {}
+
+def delete_crawl_state_file():
+    """
+    Delete the crawl_state.json file if it exists.
+    This function is used to clean up the old state file since we now use the database for state.
+    """
+    import os
+    try:
+        if os.path.exists("crawl_state.json"):
+            os.remove("crawl_state.json")
+            print("Deleted crawl_state.json file as it's no longer needed")
+    except Exception as e:
+        print(f"Error trying to delete crawl_state.json: {str(e)}")
+
+# Try to delete the state file at import time
+delete_crawl_state_file()
 
 # === Main Entry Point ===
 
