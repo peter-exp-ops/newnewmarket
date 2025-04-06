@@ -727,14 +727,8 @@ class CollectorUI:
         try:
             icon_path = "Icon 32px.png"
             if os.path.exists(icon_path):
-                # For Windows (requires PIL)
-                try:
-                    from PIL import Image, ImageTk
-                    icon = ImageTk.PhotoImage(Image.open(icon_path))
-                    self.root.iconphoto(True, icon)
-                except ImportError:
-                    # Fallback if PIL is not available
-                    self.root.iconbitmap(icon_path)
+                # Set taskbar icon for Windows
+                self.root.iconbitmap(icon_path)
         except Exception as e:
             print(f"Could not set application icon: {e}")
         
@@ -1527,11 +1521,8 @@ class CollectorUI:
             no_data_label.pack(padx=5, pady=5)
             return
         
-        # Define the specific status columns we want to show
-        filtered_statuses = ["unprocessed", "failed", "processed", "all"]
-        
-        # Filter to only include statuses that exist in the data
-        display_statuses = [status for status in filtered_statuses if status in stats["statuses"] or status == "all"]
+        # Define the specific status columns we want to show in the specified order
+        ordered_statuses = ["unprocessed", "failed", "processed", "all"]
         
         # Create table as a grid of labels
         # Header row with status types
@@ -1542,14 +1533,10 @@ class CollectorUI:
         ttk.Label(self.stats_frame, text="", width=12).grid(row=row, column=0)
         
         # Status headers
-        for status in display_statuses:
+        for status in ordered_statuses:
             ttk.Label(self.stats_frame, text=status, font=("", 9, "bold"), 
                      width=12, anchor="center").grid(row=row, column=col)
             col += 1
-            
-        # Total column
-        ttk.Label(self.stats_frame, text="Total", font=("", 9, "bold"), 
-                 width=12, anchor="center").grid(row=row, column=col)
         
         # Data rows
         for type_name in stats["types"]:
@@ -1562,19 +1549,18 @@ class CollectorUI:
             
             # Status counts
             col = 1
-            for status in display_statuses:
+            for status in ordered_statuses:
                 if status == "all":
                     # For "all" status, sum up all statuses for this type
                     count = stats["totals"]["by_type"].get(type_name, 0)
                 else:
                     count = stats["counts"].get(type_name, {}).get(status, 0)
+                    # If count is None, set it to 0
+                    if count is None:
+                        count = 0
                 ttk.Label(self.stats_frame, text=str(count), width=12, 
                          anchor="center").grid(row=row, column=col)
                 col += 1
-            
-            # Row total
-            ttk.Label(self.stats_frame, text=str(stats["totals"]["by_type"].get(type_name, 0)), 
-                     width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
         
         # Total row
         row += 1
@@ -1584,19 +1570,18 @@ class CollectorUI:
         
         # Status totals
         col = 1
-        for status in display_statuses:
+        for status in ordered_statuses:
             if status == "all":
                 # For "all" status, use the overall total
                 count = stats["totals"]["overall"]
             else:
                 count = stats["totals"]["by_status"].get(status, 0)
+                # If count is None, set it to 0
+                if count is None:
+                    count = 0
             ttk.Label(self.stats_frame, text=str(count), width=12, 
                      anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
             col += 1
-        
-        # Grand total
-        ttk.Label(self.stats_frame, text=str(stats["totals"]["overall"]), 
-                 width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
 
 def save_crawl_state(state, filename="crawl_state.json"):
     """
