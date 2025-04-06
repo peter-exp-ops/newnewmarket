@@ -410,12 +410,19 @@ class DatabaseUI:
         # Connect button
         ttk.Button(self.top_frame, text="Connect to Database", command=self.connect).grid(row=0, column=2, padx=5, pady=5)
         
-        # Create a frame for the buttons
-        self.button_frame = ttk.LabelFrame(root, text="Database Operations", padding=10)
-        self.button_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Create a frame for the database operations
+        self.db_frame = ttk.LabelFrame(root, text="Database Operations", padding=10)
+        self.db_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        # Create buttons for each function
-        self.create_buttons()
+        # Create database operation buttons
+        self.create_db_buttons()
+        
+        # Create a frame for table operations
+        self.table_frame = ttk.LabelFrame(root, text="Table Operations", padding=10)
+        self.table_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Create table operations UI
+        self.create_table_operations()
         
         # Create a frame for the output
         self.output_frame = ttk.LabelFrame(root, text="Output", padding=10)
@@ -425,55 +432,108 @@ class DatabaseUI:
         self.output_text = scrolledtext.ScrolledText(self.output_frame, wrap=tk.WORD, width=80, height=20)
         self.output_text.pack(fill=tk.BOTH, expand=True)
         
-    def create_buttons(self):
-        # Row 1
-        ttk.Button(self.button_frame, text="Initialize Database", 
+    def create_db_buttons(self):
+        # Database level operations
+        ttk.Button(self.db_frame, text="Initialize Database", 
                    command=lambda: self.execute_function(initialize_database, "Initializing database...")).grid(
                    row=0, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
         
-        ttk.Button(self.button_frame, text="Create Races Table", 
-                   command=lambda: self.execute_function(create_races_table, "Creating races table...")).grid(
+        ttk.Button(self.db_frame, text="Delete All Records", 
+                   command=lambda: self.execute_function(delete_all_records, "Deleting all records...")).grid(
                    row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
-        ttk.Button(self.button_frame, text="Create Trainers Table", 
-                   command=lambda: self.execute_function(create_trainers_table, "Creating trainers table...")).grid(
-                   row=0, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        # Row 2
-        ttk.Button(self.button_frame, text="Create Jockeys Table", 
-                   command=lambda: self.execute_function(create_jockeys_table, "Creating jockeys table...")).grid(
-                   row=1, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Button(self.button_frame, text="Create Horses Table", 
-                   command=lambda: self.execute_function(create_horses_table, "Creating horses table...")).grid(
-                   row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Button(self.button_frame, text="Create Racehorses Table", 
-                   command=lambda: self.execute_function(create_racehorses_table, "Creating racehorses table...")).grid(
-                   row=1, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        # Row 3
-        ttk.Button(self.button_frame, text="Create URLs Table", 
-                   command=lambda: self.execute_function(create_urls_table, "Creating URLs table...")).grid(
-                   row=2, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Button(self.button_frame, text="Delete All Records", 
-                   command=lambda: self.execute_function(delete_all_records, "Deleting all records...")).grid(
-                   row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Button(self.button_frame, text="Drop All Tables", 
+        ttk.Button(self.db_frame, text="Drop All Tables", 
                    command=lambda: self.execute_function(drop_all_tables, "Dropping all tables...")).grid(
-                   row=2, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        # Row 4
-        ttk.Button(self.button_frame, text="Database Info", 
+                   row=0, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+                   
+        ttk.Button(self.db_frame, text="Database Info", 
                    command=lambda: self.execute_function(get_database_info, "Getting database info...")).grid(
-                   row=3, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
+                   row=1, column=0, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Configure grid weights for responsiveness
         for i in range(3):
-            self.button_frame.columnconfigure(i, weight=1)
+            self.db_frame.columnconfigure(i, weight=1)
+            
+    def create_table_operations(self):
+        # Table selection
+        ttk.Label(self.table_frame, text="Select Table:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         
+        # Table type dropdown
+        self.table_type_var = tk.StringVar(value="races")
+        table_types = ["races", "trainers", "jockeys", "horses", "racehorses", "urls"]
+        table_dropdown = ttk.Combobox(self.table_frame, textvariable=self.table_type_var, values=table_types, state="readonly", width=15)
+        table_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Button to create selected table
+        ttk.Button(self.table_frame, text="Create Selected Table", 
+                   command=self.create_selected_table).grid(
+                   row=0, column=2, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Button to drop selected table
+        ttk.Button(self.table_frame, text="Drop Selected Table", 
+                   command=self.drop_selected_table).grid(
+                   row=0, column=3, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Configure grid weights for responsiveness
+        for i in range(1, 4):
+            self.table_frame.columnconfigure(i, weight=1)
+    
+    def create_selected_table(self):
+        """Create the selected table"""
+        if self.conn is None:
+            messagebox.showerror("Not Connected", "Please connect to the database first.")
+            return
+            
+        table_type = self.table_type_var.get()
+        
+        try:
+            self.log(f"Creating {table_type} table...")
+            
+            # Call the appropriate table creation function
+            if table_type == "races":
+                create_races_table(self.conn)
+            elif table_type == "trainers":
+                create_trainers_table(self.conn)
+            elif table_type == "jockeys":
+                create_jockeys_table(self.conn)
+            elif table_type == "horses":
+                create_horses_table(self.conn)
+            elif table_type == "racehorses":
+                create_racehorses_table(self.conn)
+            elif table_type == "urls":
+                create_urls_table(self.conn)
+            
+            self.log(f"{table_type} table created successfully.")
+            
+        except Exception as e:
+            self.log(f"Error creating {table_type} table: {e}")
+            messagebox.showerror("Operation Error", f"Failed to create {table_type} table: {e}")
+    
+    def drop_selected_table(self):
+        """Drop the selected table"""
+        if self.conn is None:
+            messagebox.showerror("Not Connected", "Please connect to the database first.")
+            return
+            
+        table_type = self.table_type_var.get()
+        
+        # Confirm before dropping
+        if not messagebox.askyesno("Confirm", f"Are you sure you want to drop the {table_type} table? This action cannot be undone."):
+            return
+            
+        try:
+            self.log(f"Dropping {table_type} table...")
+            
+            cursor = self.conn.cursor()
+            cursor.execute(f"DROP TABLE IF EXISTS {table_type}")
+            self.conn.commit()
+            
+            self.log(f"{table_type} table dropped successfully.")
+            
+        except Exception as e:
+            self.log(f"Error dropping {table_type} table: {e}")
+            messagebox.showerror("Operation Error", f"Failed to drop {table_type} table: {e}")
+            
     def connect(self):
         try:
             if self.conn is not None:
