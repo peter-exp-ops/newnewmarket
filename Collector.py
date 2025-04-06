@@ -724,14 +724,19 @@ class CollectorUI:
         self.root.title("Newmarket - Collector")
         self.root.geometry("900x700")
         
-        # Set application icon
+        # Set application icon for both window and taskbar
         try:
             icon_path = "Icon 32px.png"
             if os.path.exists(icon_path):
-                # Set taskbar icon for Windows
+                # For Windows taskbar and window icon
                 self.root.iconbitmap(icon_path)
+                
+                # For cross-platform window icon (Tkinter PhotoImage)
+                icon_img = tk.PhotoImage(file=icon_path)
+                self.root.tk.call('wm', 'iconphoto', self.root._w, icon_img)
         except Exception as e:
             print(f"Could not set application icon: {e}")
+            self.log(f"Icon error: {e}")
         
         self.conn = None
         self.discovered_urls = []
