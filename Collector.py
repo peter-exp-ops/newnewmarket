@@ -19,6 +19,7 @@ from tkinter import ttk, messagebox, scrolledtext, filedialog, StringVar
 import traceback
 import platform
 import threading
+import json
 
 # HTTP Headers for requests
 HEADERS = {
@@ -41,10 +42,15 @@ def connect_to_database(db_path="racing_data.db"):
     Returns:
         sqlite3.Connection: Connection object
     """
-    conn = sqlite3.connect(db_path)
-    # Enable foreign keys
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        # Use check_same_thread=False to allow connections to be used across threads
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        # Enable foreign keys
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+    except Exception as e:
+        print(f"Error connecting to database: {str(e)}")
+        return None
 
 def check_database_structure():
     """
@@ -956,7 +962,8 @@ class CollectorUI:
             sqlite3.Connection: Connection object
         """
         try:
-            conn = sqlite3.connect(db_path)
+            # Use check_same_thread=False to allow connections to be used across threads
+            conn = sqlite3.connect(db_path, check_same_thread=False)
             # Enable foreign keys
             conn.execute("PRAGMA foreign_keys = ON")
             return conn
@@ -1916,25 +1923,23 @@ class CollectorUI:
 
 def save_crawl_state(state, filename="crawl_state.json"):
     """
-    Save crawl state to a JSON file for resuming later
+    Save crawl state to a file
     
     Args:
-        state (dict): Crawl state to save
-        filename (str): Filename to save to
+        state (dict): Crawl state
+        filename (str): File to save state to
         
     Returns:
-        bool: True if successful, False otherwise
+        bool: True if state was saved successfully
     """
     try:
-        import json
-        
-        # Convert sets to lists for JSON serialization
+        # Convert visited_urls and urls_to_visit to lists
         state_copy = state.copy()
         if 'visited_urls' in state_copy:
             state_copy['visited_urls'] = list(state_copy['visited_urls'])
-        if 'discovered_urls' in state_copy and isinstance(state_copy['discovered_urls'], set):
-            state_copy['discovered_urls'] = list(state_copy['discovered_urls'])
-            
+        if 'urls_to_visit' in state_copy:
+            state_copy['urls_to_visit'] = list(state_copy['urls_to_visit'])
+        
         with open(filename, 'w') as f:
             json.dump(state_copy, f)
         return True
@@ -1944,47 +1949,54 @@ def save_crawl_state(state, filename="crawl_state.json"):
 
 def load_crawl_state(filename="crawl_state.json"):
     """
-    Load crawl state from a JSON file
+    Load crawl state from a file
     
     Args:
-        filename (str): Filename to load from
+        filename (str): File to load state from
         
     Returns:
-        dict: Loaded crawl state or empty dict if not found/error
+        dict: Crawl state or None if file doesn't exist
     """
     try:
         import json
-        import os
         
-        if not os.path.exists(filename):
-            return {}
-            
+        # Check if file exists
+        if not os.path.isfile(filename):
+            return None
+        
         with open(filename, 'r') as f:
             state = json.load(f)
             
         # Convert lists back to sets
         if 'visited_urls' in state:
             state['visited_urls'] = set(state['visited_urls'])
-        if 'discovered_urls' in state and isinstance(state['discovered_urls'], list):
-            state['discovered_urls'] = set(state['discovered_urls'])
-            
+        if 'urls_to_visit' in state:
+            state['urls_to_visit'] = list(state['urls_to_visit'])
+        
         return state
     except Exception as e:
         print(f"Error loading crawl state: {str(e)}")
-        return {}
+        return None
 
-def delete_crawl_state_file():
+def delete_crawl_state_file(filename="crawl_state.json"):
     """
-    Delete the crawl_state.json file if it exists.
-    This function is used to clean up the old state file since we now use the database for state.
+    Delete crawl state file if it exists
+    
+    Args:
+        filename (str): File to delete
+        
+    Returns:
+        bool: True if file was deleted, False if it doesn't exist
     """
-    import os
     try:
-        if os.path.exists("crawl_state.json"):
-            os.remove("crawl_state.json")
-            print("Deleted crawl_state.json file as it's no longer needed")
+        if os.path.isfile(filename):
+            os.remove(filename)
+            print(f"Deleted crawl state file: {filename}")
+            return True
+        return False
     except Exception as e:
-        print(f"Error trying to delete crawl_state.json: {str(e)}")
+        print(f"Error deleting crawl state file: {str(e)}")
+        return False
 
 # Try to delete the state file at import time
 delete_crawl_state_file()
