@@ -835,32 +835,22 @@ class CollectorUI:
         scraper_frame = ttk.LabelFrame(main_frame, text="Scrape", padding="10")
         scraper_frame.pack(fill=tk.X, pady=5)
         
-        # Add data type selection
-        ttk.Label(scraper_frame, text="Data Type:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        self.scrape_type_var = StringVar(value="all")
-        scrape_type_combo = ttk.Combobox(scraper_frame, textvariable=self.scrape_type_var, width=10, 
-                                        values=["all", "races", "jockeys", "trainers", "horses"], 
-                                        state="readonly")
-        scrape_type_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        
         # Add limit control
-        ttk.Label(scraper_frame, text="URL Limit:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(scraper_frame, text="URL Limit:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.url_limit_var = tk.IntVar(value=50)
         url_limit_spinner = ttk.Spinbox(scraper_frame, from_=1, to=1000, increment=10, textvariable=self.url_limit_var, width=5)
-        url_limit_spinner.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        url_limit_spinner.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         
-        # Add success filter
-        ttk.Label(scraper_frame, text="Status:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
-        self.url_status_var = StringVar(value="unprocessed")
-        status_combo = ttk.Combobox(scraper_frame, textvariable=self.url_status_var, width=10, 
-                                   values=["unprocessed", "all", "failed", "successful"], 
-                                   state="readonly")
-        status_combo.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        # Add timeout control for scraping
+        ttk.Label(scraper_frame, text="Timeout (mins):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.scrape_timeout_var = tk.IntVar(value=5)
+        scrape_timeout_spinner = ttk.Spinbox(scraper_frame, from_=1, to=60, increment=1, textvariable=self.scrape_timeout_var, width=5)
+        scrape_timeout_spinner.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         
-        ttk.Button(scraper_frame, text="Scrape URLs", command=self.scrape_urls).grid(row=3, column=0, padx=5, pady=5)
+        ttk.Button(scraper_frame, text="Scrape URLs", command=self.scrape_urls).grid(row=2, column=0, padx=5, pady=5)
         
         self.scrape_stats_var = StringVar(value="Not started")
-        ttk.Label(scraper_frame, textvariable=self.scrape_stats_var).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(scraper_frame, textvariable=self.scrape_stats_var).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
         
         # 4. Progress section
         progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding="10")
