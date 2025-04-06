@@ -22,7 +22,11 @@ import threading
 
 # HTTP Headers for requests
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
 }
 
 # === Database Connection Functions ===
@@ -131,12 +135,12 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
         # Get current timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        # Define URL patterns for each type with strict matching
+        # Define URL patterns for each type with less restrictive matching
         url_patterns = {
-            'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
-            'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
-            'horses': re.compile(r'/racing/profiles/horse/\d+$'),
-            'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Complete race URL
+            'jockeys': re.compile(r'/racing/profiles/jockey/'),
+            'trainers': re.compile(r'/racing/profiles/trainer/'),
+            'horses': re.compile(r'/racing/profiles/horse/'),
+            'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
         }
         
         # Helper function to determine URL type
@@ -154,12 +158,17 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
         filtered_urls = [url for url in urls if not date_pattern.search(url.replace('https://www.sportinglife.com', ''))]
         
         if len(filtered_urls) < len(urls):
-            # Use log callback if available
-            log_message = f"Filtered out {len(urls) - len(filtered_urls)} date-only URLs"
-            print(log_message)  # Always print
+            print(f"Filtered out {len(urls) - len(filtered_urls)} date-only URLs")
         
         # Use executemany for better performance
         url_data = [(url, timestamp, status, get_url_type(url)) for url in filtered_urls]
+        
+        # Debug URL types being saved
+        type_counts = {}
+        for _, _, _, url_type in url_data:
+            type_counts[url_type] = type_counts.get(url_type, 0) + 1
+        print(f"URL types being saved: {type_counts}")
+        
         cursor.executemany(
             "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
             url_data
@@ -813,12 +822,12 @@ class CollectorUI:
                 queue = [base_url]
                 url_count = 0
                 
-                # Define URL patterns for each type - more strict patterns
+                # Define URL patterns for each type - less restrictive patterns
                 url_patterns = {
-                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
-                    'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
-                    'horses': re.compile(r'/racing/profiles/horse/\d+$'),
-                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Must include course and race ID
+                    'jockeys': re.compile(r'/racing/profiles/jockey/'),
+                    'trainers': re.compile(r'/racing/profiles/trainer/'),
+                    'horses': re.compile(r'/racing/profiles/horse/'),
+                    'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
                 }
                 
                 # Useful patterns that we follow but don't save
@@ -840,8 +849,11 @@ class CollectorUI:
                 
                 # Helper function to determine URL type
                 def get_url_type(url):
+                    # Remove protocol and domain for matching
+                    url_path = url.replace('https://www.sportinglife.com', '')
+                    
                     for type_name, pattern in url_patterns.items():
-                        if pattern.search(url):
+                        if pattern.search(url_path):
                             return type_name
                     return None
                 
@@ -859,20 +871,31 @@ class CollectorUI:
                         # Add delay to avoid overloading the server
                         time.sleep(0.2)
                         
-                        response = requests.get(current_url, headers=HEADERS)
+                        # Make the request with enhanced headers
+                        response = requests.get(current_url, headers=HEADERS, allow_redirects=True)
                         if response.status_code != 200:
                             self.log(f"Failed to get {current_url}: {response.status_code}")
                             continue
                         
+                        # Enhanced debugging
+                        self.log(f"Response URL (after redirects): {response.url}")
+                        self.log(f"Response content length: {len(response.text)}")
+                        
                         soup = BeautifulSoup(response.text, 'html.parser')
+                        
+                        # Log page title
+                        page_title = soup.title.string if soup.title else "No title"
+                        self.log(f"Page title: {page_title}")
                         
                         # Find all links in the page
                         links = soup.find_all('a', href=True)
                         self.log(f"Found {len(links)} links on the page")
                         
-                        # Debug first 5 links
-                        for i, link in enumerate(links[:5]):
-                            self.log(f"Sample link {i+1}: {link['href']}")
+                        # Debug first 10 links
+                        for i, link in enumerate(links[:10]):
+                            href = link.get('href', '')
+                            href_normalized = normalize_url(href)
+                            self.log(f"Sample link {i+1}: {href} -> {href_normalized}")
                         
                         # Count how many links match our patterns
                         matching_count = 0
@@ -880,8 +903,10 @@ class CollectorUI:
                         
                         # Process each link
                         for link in links:
-                            href = link['href']
-                            
+                            href = link.get('href', '')
+                            if not href:
+                                continue
+                                
                             # Normalize URL
                             href = normalize_url(href)
                             
@@ -893,7 +918,7 @@ class CollectorUI:
                             match_type = get_url_type(href)
                             
                             # Handle date-only URLs separately
-                            if match_type is None and date_pattern.search(href):
+                            if match_type is None and date_pattern.search(href.replace('https://www.sportinglife.com', '')):
                                 date_count += 1
                                 if href not in visited_urls and href not in queue:
                                     queue.append(href)
@@ -928,6 +953,16 @@ class CollectorUI:
                                 break
                         
                         self.log(f"Page had {matching_count} matching target URLs and {date_count} date pages to follow")
+                        
+                        # If we didn't find any links to follow on this page, print a snippet of the page
+                        if matching_count == 0 and date_count == 0:
+                            try:
+                                # Get a sample of the HTML for debugging
+                                html_sample = response.text[:1000] + "..." if len(response.text) > 1000 else response.text
+                                self.log("HTML sample from page:")
+                                self.log(html_sample)
+                            except Exception as e:
+                                self.log(f"Error getting HTML sample: {str(e)}")
                             
                     except Exception as e:
                         self.log(f"Error processing {current_url}: {str(e)}")
@@ -943,6 +978,12 @@ class CollectorUI:
                 if discovered_urls:
                     saved_count = self.save_urls_to_database(conn, list(discovered_urls))
                     self.log(f"Saved {saved_count} URLs to database")
+                else:
+                    self.log("No matching URLs were found during the crawl.")
+                    
+                # If we didn't find any URLs at all, show a warning
+                if not discovered_urls and visited_urls:
+                    self.log("WARNING: No matching URLs found despite visiting pages. Check URL patterns or website structure.")
                 
                 # Update UI with final stats
                 elapsed_time = time.time() - start_time
@@ -1161,12 +1202,12 @@ class CollectorUI:
             # Get current timestamp
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Define URL patterns for each type with strict matching
+            # Define URL patterns for each type with less restrictive matching
             url_patterns = {
-                'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
-                'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
-                'horses': re.compile(r'/racing/profiles/horse/\d+$'),
-                'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Complete race URL
+                'jockeys': re.compile(r'/racing/profiles/jockey/'),
+                'trainers': re.compile(r'/racing/profiles/trainer/'),
+                'horses': re.compile(r'/racing/profiles/horse/'),
+                'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
             }
             
             # Helper function to determine URL type
@@ -1188,6 +1229,13 @@ class CollectorUI:
             
             # Use executemany for better performance
             url_data = [(url, timestamp, status, get_url_type(url)) for url in filtered_urls]
+            
+            # Debug URL types being saved
+            type_counts = {}
+            for _, _, _, url_type in url_data:
+                type_counts[url_type] = type_counts.get(url_type, 0) + 1
+            self.log(f"URL types being saved: {type_counts}")
+            
             cursor.executemany(
                 "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
                 url_data
