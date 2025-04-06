@@ -779,10 +779,22 @@ class CollectorUI:
         max_urls_spinner = ttk.Spinbox(crawler_frame, from_=10, to=10000, increment=10, textvariable=self.max_urls_var, width=5)
         max_urls_spinner.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
         
-        ttk.Button(crawler_frame, text="Crawl Website", command=self.crawl_website).grid(row=3, column=0, padx=5, pady=5)
+        # Add saturation threshold control
+        ttk.Label(crawler_frame, text="Saturation Threshold (%):").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.saturation_var = tk.DoubleVar(value=5.0)
+        saturation_spinner = ttk.Spinbox(crawler_frame, from_=0.1, to=20.0, increment=0.5, textvariable=self.saturation_var, width=5)
+        saturation_spinner.grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Add window size control for saturation detection
+        ttk.Label(crawler_frame, text="Window Size:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        self.window_size_var = tk.IntVar(value=1000)
+        window_spinner = ttk.Spinbox(crawler_frame, from_=100, to=5000, increment=100, textvariable=self.window_size_var, width=5)
+        window_spinner.grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Button(crawler_frame, text="Crawl Website", command=self.crawl_website).grid(row=5, column=0, padx=5, pady=5)
         
         self.crawl_stats_var = StringVar(value="Not started")
-        ttk.Label(crawler_frame, textvariable=self.crawl_stats_var).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(crawler_frame, textvariable=self.crawl_stats_var).grid(row=5, column=1, sticky=tk.W, padx=5, pady=5)
         
         # 3. Scraper section
         scraper_frame = ttk.LabelFrame(main_frame, text="Scrape", padding="10")
@@ -935,6 +947,8 @@ class CollectorUI:
         base_url = self.base_url_var.get()
         max_urls = self.max_urls_var.get()
         timeout_mins = self.timeout_var.get()
+        saturation_threshold = self.saturation_var.get()
+        window_size = self.window_size_var.get()
         resume_crawl = True  # Add option to resume if a saved state exists
         
         def run_crawler():
@@ -1009,11 +1023,8 @@ class CollectorUI:
                 
                 # Helper function to determine URL type
                 def get_url_type(url):
-                    # Remove protocol and domain for matching
-                    url_path = url.replace('https://www.sportinglife.com', '')
-                    
                     for type_name, pattern in url_patterns.items():
-                        if pattern.search(url_path):
+                        if pattern.search(url):
                             return type_name
                     return None
                 
@@ -1063,9 +1074,8 @@ class CollectorUI:
                     return True
                 
                 # Variables for detecting saturation
-                window_size = 1000  # Look at last 1000 pages
                 discovery_window = []  # Track new URLs discovered in the window
-                discovery_threshold = 0.05  # 5% discovery rate
+                discovery_threshold = saturation_threshold / 100
                 save_interval = 100  # Save state every 100 pages
                 
                 # Main crawling loop
@@ -1108,8 +1118,14 @@ class CollectorUI:
                     # Update UI periodically
                     if pages_visited % 20 == 0 or len(discovered_urls) % 100 == 0:
                         elapsed = time.time() - start_time
+                        
+                        # Calculate current saturation rate if we have enough data
+                        current_saturation = 0.0
+                        if len(discovery_window) > 0:
+                            current_saturation = (sum(discovery_window) / len(discovery_window)) * 100
+                            
                         stats_msg = (f"Visited: {pages_visited} pages, Found: {len(discovered_urls)} URLs, "
-                                    f"Queue: {len(urls_to_visit)}, Elapsed: {elapsed:.1f}s")
+                                    f"Queue: {len(urls_to_visit)}, Saturation: {current_saturation:.2f}%")
                         self.crawl_stats_var.set(stats_msg)
                         self.root.update()
                         
@@ -1180,9 +1196,19 @@ class CollectorUI:
                         # Check for saturation when window is full
                         if len(discovery_window) >= window_size:
                             avg_discovery_rate = sum(discovery_window) / window_size
+                            current_saturation_pct = avg_discovery_rate * 100
+                            
+                            # Log saturation status periodically
+                            if pages_visited % 200 == 0:
+                                self.log(f"Current saturation rate: {current_saturation_pct:.2f}% (threshold: {saturation_threshold:.2f}%)")
+                            
+                            # Check if we've reached saturation threshold
                             if avg_discovery_rate < discovery_threshold and pages_visited > window_size * 2:
-                                self.log(f"Crawl saturation detected: discovery rate {avg_discovery_rate:.4f} below threshold {discovery_threshold}")
-                                self.log(f"Stopping crawl after {pages_visited} pages and {len(discovered_urls)} URLs discovered")
+                                self.log(f"CRAWL SATURATION DETECTED: Current rate {current_saturation_pct:.2f}% is below threshold {saturation_threshold:.2f}%")
+                                self.log(f"Stopping crawl after visiting {pages_visited} pages and discovering {len(discovered_urls)} URLs")
+                                
+                                # Update UI to show saturation was reached
+                                self.crawl_stats_var.set(f"SATURATION REACHED at {current_saturation_pct:.2f}% - Found {len(discovered_urls)} URLs")
                                 break
                     
                     except requests.RequestException as e:
@@ -1210,6 +1236,12 @@ class CollectorUI:
                 self.log(f"Visited {pages_visited} pages")
                 self.log(f"Discovered {len(discovered_urls)} URLs")
                 
+                # Calculate final saturation rate
+                final_saturation = 0.0
+                if len(discovery_window) > 0:
+                    final_saturation = (sum(discovery_window) / len(discovery_window)) * 100
+                    self.log(f"Final saturation rate: {final_saturation:.2f}% (threshold: {saturation_threshold:.2f}%)")
+                
                 type_counts = {}
                 cursor.execute("SELECT type, COUNT(*) FROM urls GROUP BY type")
                 for row in cursor.fetchall():
@@ -1219,7 +1251,18 @@ class CollectorUI:
                 
                 # Set progress to 100%
                 self.progress_var.set(100)
-                self.crawl_stats_var.set(f"Completed: {len(discovered_urls)} URLs found")
+                
+                # Show completion message with saturation info
+                if not self.crawl_stats_var.get().startswith("SATURATION REACHED"):
+                    reason = ""
+                    if len(discovered_urls) >= max_urls:
+                        reason = "MAX URLS REACHED"
+                    elif timeout_reached():
+                        reason = "TIMEOUT REACHED"
+                    else:
+                        reason = "NO MORE URLS"
+                        
+                    self.crawl_stats_var.set(f"{reason} - Found {len(discovered_urls)} URLs, Saturation: {final_saturation:.2f}%")
                 
                 # Close database connection
                 conn.close()
