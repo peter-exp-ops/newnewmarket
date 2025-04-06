@@ -434,8 +434,23 @@ def get_database_info(conn):
 class DatabaseUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Database Operations")
+        self.root.title("Newmarket - Database Operations")
         self.root.geometry("800x600")
+        
+        # Set application icon for both window and taskbar
+        try:
+            icon_path = "Icon 32px.png"
+            if os.path.exists(icon_path):
+                # For Windows taskbar and window icon
+                self.root.iconbitmap(icon_path)
+                
+                # For cross-platform window icon (Tkinter PhotoImage)
+                icon_img = tk.PhotoImage(file=icon_path)
+                self.root.tk.call('wm', 'iconphoto', self.root._w, icon_img)
+        except Exception as e:
+            print(f"Could not set application icon: {e}")
+            # Will log the error after connecting to avoid calling self.log before it's ready
+        
         self.conn = None
         
         # Create a frame for the top section
@@ -522,6 +537,10 @@ class DatabaseUI:
             self.conn = connect_to_database()
             self.status_var.set("Connected to racing_data.db")
             self.log("Successfully connected to the database.")
+            
+            # Log any icon errors that might have occurred during initialization
+            if not os.path.exists("Icon 32px.png"):
+                self.log("Warning: Icon 32px.png not found in the current directory.")
         except Exception as e:
             self.status_var.set("Connection failed")
             self.log(f"Failed to connect to database: {e}")
