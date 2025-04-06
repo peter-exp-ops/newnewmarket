@@ -180,6 +180,78 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
         print(f"Error saving URLs to database: {str(e)}")
         return 0
 
+def get_url_stats(conn):
+    """
+    Get statistics of URLs by type and status
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        
+    Returns:
+        dict: Dictionary with URL statistics
+    """
+    try:
+        cursor = conn.cursor()
+        
+        # Check if urls table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+        if not cursor.fetchone():
+            return {"error": "URLs table does not exist"}
+        
+        # Get counts by type and status
+        cursor.execute("""
+            SELECT 
+                COALESCE(type, 'unknown') as type,
+                COALESCE(status, 'unknown') as status,
+                COUNT(*) as count
+            FROM urls
+            GROUP BY type, status
+            ORDER BY type, status
+        """)
+        
+        results = cursor.fetchall()
+        
+        # Process results into a structured format
+        stats = {
+            "types": set(),
+            "statuses": set(),
+            "counts": {},
+            "totals": {"by_type": {}, "by_status": {}, "overall": 0}
+        }
+        
+        for row in results:
+            type_name = row[0] 
+            status = row[1]
+            count = row[2]
+            
+            # Add to sets
+            stats["types"].add(type_name)
+            stats["statuses"].add(status)
+            
+            # Add counts
+            if type_name not in stats["counts"]:
+                stats["counts"][type_name] = {}
+            stats["counts"][type_name][status] = count
+            
+            # Update totals
+            if type_name not in stats["totals"]["by_type"]:
+                stats["totals"]["by_type"][type_name] = 0
+            if status not in stats["totals"]["by_status"]:
+                stats["totals"]["by_status"][status] = 0
+                
+            stats["totals"]["by_type"][type_name] += count
+            stats["totals"]["by_status"][status] += count
+            stats["totals"]["overall"] += count
+        
+        # Convert sets to sorted lists
+        stats["types"] = sorted(list(stats["types"]))
+        stats["statuses"] = sorted(list(stats["statuses"]))
+        
+        return stats
+        
+    except Exception as e:
+        return {"error": str(e)}
+
 # === Crawling Functions ===
 
 def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, progress_callback=None, conn=None, timeout_callback=None):
@@ -668,10 +740,24 @@ class CollectorUI:
         conn_frame = ttk.LabelFrame(main_frame, text="Database", padding="10")
         conn_frame.pack(fill=tk.X, pady=5)
         
+        # Top row with connection controls
         self.status_var = StringVar(value="Not Connected")
         ttk.Label(conn_frame, text="Status:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         ttk.Label(conn_frame, textvariable=self.status_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         ttk.Button(conn_frame, text="Connect to Database", command=self.connect_to_db).grid(row=0, column=2, padx=5, pady=5)
+        
+        # URL Statistics table
+        ttk.Label(conn_frame, text="URL Statistics:", font=("", 10, "bold")).grid(row=1, column=0, sticky=tk.W, padx=5, pady=(10, 5))
+        
+        # Create a frame for the table
+        self.stats_frame = ttk.Frame(conn_frame)
+        self.stats_frame.grid(row=2, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        
+        # Placeholder for the table (will be populated by update_url_stats)
+        self.url_stats_table = None
+        
+        # Add refresh button
+        ttk.Button(conn_frame, text="Refresh Stats", command=self.update_url_stats).grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
         
         # 2. Crawler section (renamed and simplified)
         crawler_frame = ttk.LabelFrame(main_frame, text="Crawl", padding="10")
@@ -767,16 +853,79 @@ class CollectorUI:
             self.conn = self.connect_to_database()
             
             # Check if the database has all required tables
-            if self.check_database_structure(self.conn):
+            if self.check_database_structure():
                 self.status_var.set("Connected")
                 self.log("Successfully connected to the database.")
+                # Update URL statistics
+                self.update_url_stats()
             else:
                 self.status_var.set("Connected (incomplete schema)")
                 self.log("Connected to database but schema is incomplete.")
+                # Still try to update URL statistics
+                self.update_url_stats()
         except Exception as e:
             self.status_var.set("Connection Failed")
             self.log(f"Failed to connect to database: {str(e)}")
             messagebox.showerror("Connection Error", f"Failed to connect to database: {str(e)}")
+    
+    def check_database_structure(self):
+        """
+        Check if the database has all required tables
+        
+        Returns:
+            bool: True if all required tables exist
+        """
+        required_tables = ['races', 'horses', 'jockeys', 'trainers', 'racehorses', 'urls']
+        
+        try:
+            if not self.conn:
+                return False
+                
+            cursor = self.conn.cursor()
+            
+            # Get all tables in the database
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [table[0] for table in cursor.fetchall()]
+            
+            # Check if all required tables exist
+            all_tables_exist = all(table in tables for table in required_tables)
+            
+            # If 'urls' table doesn't exist, create it
+            if 'urls' not in tables:
+                self.log("Creating 'urls' table...")
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS urls (
+                    url TEXT PRIMARY KEY,
+                    date_accessed TIMESTAMP,
+                    status TEXT DEFAULT "unprocessed",
+                    type TEXT
+                )
+                ''')
+                self.conn.commit()
+            
+            return all_tables_exist
+        except Exception as e:
+            self.log(f"Error checking database structure: {e}")
+            return False
+    
+    def connect_to_database(self, db_path="racing_data.db"):
+        """
+        Establish connection to the SQLite database
+        
+        Args:
+            db_path (str): Path to the SQLite database file
+            
+        Returns:
+            sqlite3.Connection: Connection object
+        """
+        try:
+            conn = sqlite3.connect(db_path)
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys = ON")
+            return conn
+        except Exception as e:
+            self.log(f"Error connecting to database: {str(e)}")
+            return None
     
     def crawl_website(self):
         """
@@ -810,7 +959,7 @@ class CollectorUI:
                     self.log("Failed to connect to database.")
                     return
                 
-                self.check_database_structure(conn)
+                self.check_database_structure()
                 
                 # Get existing URLs from database to avoid duplicates
                 cursor = conn.cursor()
@@ -849,11 +998,8 @@ class CollectorUI:
                 
                 # Helper function to determine URL type
                 def get_url_type(url):
-                    # Remove protocol and domain for matching
-                    url_path = url.replace('https://www.sportinglife.com', '')
-                    
                     for type_name, pattern in url_patterns.items():
-                        if pattern.search(url_path):
+                        if pattern.search(url):
                             return type_name
                     return None
                 
@@ -1193,65 +1339,6 @@ class CollectorUI:
         # Update the UI immediately to show the new log entry
         self.root.update()  # Forces an immediate update of the UI
 
-    def connect_to_database(self, db_path="racing_data.db"):
-        """
-        Establish connection to the SQLite database
-        
-        Args:
-            db_path (str): Path to the SQLite database file
-            
-        Returns:
-            sqlite3.Connection: Connection object
-        """
-        try:
-            conn = sqlite3.connect(db_path)
-            # Enable foreign keys
-            conn.execute("PRAGMA foreign_keys = ON")
-            return conn
-        except Exception as e:
-            self.log(f"Error connecting to database: {str(e)}")
-            return None
-
-    def check_database_structure(self, conn):
-        """
-        Check if the database has all required tables
-        
-        Args:
-            conn (sqlite3.Connection): Database connection
-            
-        Returns:
-            bool: True if all required tables exist
-        """
-        required_tables = ['races', 'horses', 'jockeys', 'trainers', 'racehorses', 'urls']
-        
-        try:
-            cursor = conn.cursor()
-            
-            # Get all tables in the database
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [table[0] for table in cursor.fetchall()]
-            
-            # Check if all required tables exist
-            all_tables_exist = all(table in tables for table in required_tables)
-            
-            # If 'urls' table doesn't exist, create it
-            if 'urls' not in tables:
-                self.log("Creating 'urls' table...")
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS urls (
-                    url TEXT PRIMARY KEY,
-                    date_accessed TIMESTAMP,
-                    status TEXT DEFAULT "unprocessed",
-                    type TEXT
-                )
-                ''')
-                conn.commit()
-            
-            return all_tables_exist
-        except Exception as e:
-            self.log(f"Error checking database structure: {str(e)}")
-            return False
-
     def save_urls_to_database(self, conn, urls, status="unprocessed"):
         """
         Save URLs to the database
@@ -1327,6 +1414,93 @@ class CollectorUI:
         except Exception as e:
             self.log(f"Error saving URLs to database: {str(e)}")
             return 0
+
+    def update_url_stats(self):
+        """Update the URL statistics table"""
+        try:
+            if self.conn is None:
+                self.log("Please connect to the database first")
+                return
+            
+            stats = get_url_stats(self.conn)
+            self.display_url_stats(stats)
+            self.log("URL statistics updated")
+        except Exception as e:
+            self.log(f"Error updating URL statistics: {str(e)}")
+
+    def display_url_stats(self, stats):
+        """Display the URL statistics in the UI"""
+        # Clear existing widgets in stats_frame
+        for widget in self.stats_frame.winfo_children():
+            widget.destroy()
+        
+        # Check for errors
+        if "error" in stats:
+            error_label = ttk.Label(self.stats_frame, text=f"Error: {stats['error']}")
+            error_label.pack(padx=5, pady=5)
+            return
+            
+        # Check if we have data
+        if not stats["types"] or not stats["statuses"]:
+            no_data_label = ttk.Label(self.stats_frame, text="No URL data available")
+            no_data_label.pack(padx=5, pady=5)
+            return
+        
+        # Create table as a grid of labels
+        # Header row with status types
+        row = 0
+        col = 1
+        
+        # Empty cell in top-left corner
+        ttk.Label(self.stats_frame, text="", width=12).grid(row=row, column=0)
+        
+        # Status headers
+        for status in stats["statuses"]:
+            ttk.Label(self.stats_frame, text=status, font=("", 9, "bold"), 
+                     width=12, anchor="center").grid(row=row, column=col)
+            col += 1
+            
+        # Total column
+        ttk.Label(self.stats_frame, text="Total", font=("", 9, "bold"), 
+                 width=12, anchor="center").grid(row=row, column=col)
+        
+        # Data rows
+        for type_name in stats["types"]:
+            row += 1
+            col = 0
+            
+            # Type name in first column
+            ttk.Label(self.stats_frame, text=type_name, font=("", 9, "bold"), 
+                     width=12, anchor="w").grid(row=row, column=col)
+            
+            # Status counts
+            col = 1
+            for status in stats["statuses"]:
+                count = stats["counts"].get(type_name, {}).get(status, 0)
+                ttk.Label(self.stats_frame, text=str(count), width=12, 
+                         anchor="center").grid(row=row, column=col)
+                col += 1
+            
+            # Row total
+            ttk.Label(self.stats_frame, text=str(stats["totals"]["by_type"].get(type_name, 0)), 
+                     width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
+        
+        # Total row
+        row += 1
+        col = 0
+        ttk.Label(self.stats_frame, text="Total", font=("", 9, "bold"), 
+                 width=12, anchor="w").grid(row=row, column=col)
+        
+        # Status totals
+        col = 1
+        for status in stats["statuses"]:
+            ttk.Label(self.stats_frame, text=str(stats["totals"]["by_status"].get(status, 0)), 
+                     width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
+            col += 1
+        
+        # Grand total
+        ttk.Label(self.stats_frame, text=str(stats["totals"]["overall"]), 
+                 width=12, anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
 
 # === Main Entry Point ===
 
