@@ -72,18 +72,6 @@ def check_database_structure():
         # Check if all required tables exist
         all_tables_exist = all(table in tables for table in required_tables)
         
-        # If 'urls' table doesn't exist, create it
-        if 'urls' not in tables:
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS urls (
-                url TEXT PRIMARY KEY,
-                date_accessed TIMESTAMP,
-                success BOOLEAN,
-                type TEXT
-            )
-            ''')
-            conn.commit()
-        
         conn.close()
         return all_tables_exist
     except Exception as e:
@@ -128,24 +116,19 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
     try:
         cursor = conn.cursor()
         
-        # Create table if it doesn't exist
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS urls (
-            url TEXT PRIMARY KEY,
-            date_accessed TIMESTAMP,
-            status TEXT DEFAULT "unprocessed",
-            type TEXT
-        )
-        ''')
+        # Check if urls table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+        if not cursor.fetchone():
+            raise Exception("Required table 'urls' does not exist in the database")
         
         # Get current timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # Define URL patterns for each type with less restrictive matching
         url_patterns = {
-            'jockeys': re.compile(r'/racing/profiles/jockey/'),
-            'trainers': re.compile(r'/racing/profiles/trainer/'),
-            'horses': re.compile(r'/racing/profiles/horse/'),
+            'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+            'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+            'horses': re.compile(r'/racing/profiles/horse/\d+$'),
             'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
         }
         
@@ -296,6 +279,15 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     Returns:
         list: List of discovered URLs
     """
+    # Check if the required tables exist
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+        if not cursor.fetchone():
+            if log_callback:
+                log_callback("Required table 'urls' does not exist in the database")
+            return []
+
     discovered_urls = []
     visited_urls = set()
     urls_to_visit = [base_url]
@@ -324,7 +316,7 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     url_patterns = {
         'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
         'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
-        'horses': re.compile(r'/racing/profiles/horse/\d+$'),
+        'horses': re.compile(r'/racing/profiles/horse/\d+$'),  # Strict pattern ensuring it ends with the horse ID
         'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Must include course and race ID
     }
     
@@ -521,16 +513,12 @@ def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, pr
     # Save discovered URLs to database if not already saved above
     if conn and discovered_urls:
         try:
-            # Create URLs table if it doesn't exist
+            # Check if URLs table exists
             cursor = conn.cursor()
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS urls (
-                url TEXT PRIMARY KEY,
-                date_accessed TIMESTAMP,
-                status TEXT DEFAULT "unprocessed",
-                type TEXT
-            )
-            ''')
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+            if not cursor.fetchone():
+                log("Required table 'urls' does not exist in the database")
+                return discovered_urls
             
             # Get current timestamp
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -567,10 +555,10 @@ def filter_urls_by_type(urls, url_type):
     """
     # URL patterns to match for different types
     url_patterns = {
-        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+',
-        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+',
+        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+$',
+        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+$',
         'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+'
+        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+$'  # Strict pattern with $ to match end of URL
     }
     
     # If we want all types, return all URLs that match any pattern
@@ -933,18 +921,9 @@ class CollectorUI:
             # Check if all required tables exist
             all_tables_exist = all(table in tables for table in required_tables)
             
-            # If 'urls' table doesn't exist, create it
-            if 'urls' not in tables:
-                self.log("Creating 'urls' table...")
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS urls (
-                    url TEXT PRIMARY KEY,
-                    date_accessed TIMESTAMP,
-                    status TEXT DEFAULT "unprocessed",
-                    type TEXT
-                )
-                ''')
-                self.conn.commit()
+            if not all_tables_exist:
+                missing_tables = [table for table in required_tables if table not in tables]
+                self.log(f"Missing required tables: {', '.join(missing_tables)}")
             
             return all_tables_exist
         except Exception as e:
@@ -1006,7 +985,11 @@ class CollectorUI:
                     self.log("Failed to connect to database.")
                     return
                 
-                self.check_database_structure()
+                # Check if required tables exist
+                if not self.check_database_structure():
+                    self.log("Database is missing required tables. Cannot proceed with crawl.")
+                    self.crawl_stats_var.set("Error: Missing required tables")
+                    return
                 
                 # Get existing URLs from database
                 cursor = conn.cursor()
@@ -1041,9 +1024,9 @@ class CollectorUI:
                 
                 # Define URL patterns for each type
                 url_patterns = {
-                    'jockeys': re.compile(r'/racing/profiles/jockey/'),
-                    'trainers': re.compile(r'/racing/profiles/trainer/'),
-                    'horses': re.compile(r'/racing/profiles/horse/'),
+                    'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+                    'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+                    'horses': re.compile(r'/racing/profiles/horse/\d+$'),
                     'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
                 }
                 
@@ -1480,24 +1463,19 @@ class CollectorUI:
         try:
             cursor = conn.cursor()
             
-            # Create table if it doesn't exist
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS urls (
-                url TEXT PRIMARY KEY,
-                date_accessed TIMESTAMP,
-                status TEXT DEFAULT "unprocessed",
-                type TEXT
-            )
-            ''')
-            
+            # Check if urls table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+            if not cursor.fetchone():
+                raise Exception("Required table 'urls' does not exist in the database")
+                
             # Get current timestamp
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             # Define URL patterns for each type with less restrictive matching
             url_patterns = {
-                'jockeys': re.compile(r'/racing/profiles/jockey/'),
-                'trainers': re.compile(r'/racing/profiles/trainer/'),
-                'horses': re.compile(r'/racing/profiles/horse/'),
+                'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+                'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+                'horses': re.compile(r'/racing/profiles/horse/\d+$'),
                 'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/.+/\d+/')  # Less strict race pattern
             }
             
@@ -1850,6 +1828,11 @@ class CollectorUI:
         
         try:
             if data_type == 'trainers':
+                # Check if trainers table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trainers'")
+                if not cursor.fetchone():
+                    raise Exception("Required table 'trainers' does not exist in the database")
+                
                 cursor.execute(
                     "INSERT OR IGNORE INTO trainers (ID, Name) VALUES (?, ?)",
                     (data['id'], data['name'])
@@ -1857,6 +1840,11 @@ class CollectorUI:
                 self.log(f"Saved trainer: {data['name']} (ID: {data['id']})")
                 
             elif data_type == 'jockeys':
+                # Check if jockeys table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jockeys'")
+                if not cursor.fetchone():
+                    raise Exception("Required table 'jockeys' does not exist in the database")
+                
                 cursor.execute(
                     "INSERT OR IGNORE INTO jockeys (ID, Name) VALUES (?, ?)",
                     (data['id'], data['name'])
@@ -1864,52 +1852,44 @@ class CollectorUI:
                 self.log(f"Saved jockey: {data['name']} (ID: {data['id']})")
                 
             elif data_type == 'horses':
-                # Ensure table has all required columns
-                try:
-                    # Check if we need to alter the table to add new columns
-                    cursor.execute("PRAGMA table_info(horses)")
-                    existing_columns = [column[1].lower() for column in cursor.fetchall()]
-                    
-                    # Add columns if they don't exist
-                    if 'sex' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN Sex TEXT")
-                    if 'trainerid' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN TrainerID INTEGER")
-                    if 'sireid' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN SireID INTEGER")
-                    if 'damid' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN DamID INTEGER")
-                    if 'sire' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN Sire TEXT")
-                    if 'dam' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN Dam TEXT")
-                    if 'trainer' not in existing_columns:
-                        cursor.execute("ALTER TABLE horses ADD COLUMN Trainer TEXT")
-                    
-                    conn.commit()
-                except Exception as e:
-                    self.log(f"Error updating horses table schema: {str(e)}")
+                # Check if horses table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='horses'")
+                if not cursor.fetchone():
+                    raise Exception("Required table 'horses' does not exist in the database")
                 
-                # Save horse data to the horses table
+                # Get existing columns to handle column differences
+                cursor.execute("PRAGMA table_info(horses)")
+                existing_columns = [column[1].lower() for column in cursor.fetchall()]
+                
+                # Build dynamic query based on existing columns
+                columns = ['ID', 'Name']
+                values = [data['id'], data['name']]
+                
+                # Map data to available columns
+                column_map = {
+                    'foaled': 'Foaled',
+                    'sex': 'Sex',
+                    'trainer': 'Trainer',
+                    'trainer_id': 'TrainerID',
+                    'sire': 'Sire',
+                    'sire_id': 'SireID',
+                    'dam': 'Dam', 
+                    'dam_id': 'DamID',
+                    'owner': 'Owner'
+                }
+                
+                for data_key, db_column in column_map.items():
+                    if db_column.lower() in existing_columns and data.get(data_key) is not None:
+                        columns.append(db_column)
+                        values.append(data.get(data_key))
+                
+                # Construct the SQL query
+                placeholders = ', '.join(['?'] * len(values))
+                column_str = ', '.join(columns)
+                
                 cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO horses 
-                    (ID, Name, Foaled, Sex, Trainer, TrainerID, Sire, SireID, Dam, DamID, Owner) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        data['id'], 
-                        data['name'], 
-                        data.get('foaled'),
-                        data.get('sex'),
-                        data.get('trainer'),
-                        data.get('trainer_id'),
-                        data.get('sire'), 
-                        data.get('sire_id'),
-                        data.get('dam'), 
-                        data.get('dam_id'),
-                        data.get('owner')
-                    )
+                    f"INSERT OR REPLACE INTO horses ({column_str}) VALUES ({placeholders})",
+                    values
                 )
                 self.log(f"Saved horse: {data['name']} (ID: {data['id']})")
             
