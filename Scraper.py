@@ -613,48 +613,70 @@ class ScraperUI:
                                     if full_url not in visited and full_url not in to_visit:
                                         to_visit.insert(0, full_url)
                                         self.log(f"Prioritized trainer page in visit queue: {full_url}")
-                                        
-                            # If still no trainer links found, try to look around the trainer label text
-                            if not trainer_links:
-                                # Look for elements containing "Trainer" text
-                                trainer_elements = [el for el in soup.find_all(['td', 'th', 'div', 'span', 'p']) 
-                                               if el.text and 'Trainer' in el.text]
+                        
+                        # Extract race links from the form history table
+                        form_tables = soup.select('table')
+                        for table in form_tables:
+                            # Check if this is the form history table
+                            # Form tables typically have columns for Date, Pos, Type, Course, etc.
+                            headers = [th.text.strip() for th in table.select('th')]
+                            if headers and ('Date' in headers or 'Pos' in headers or 'Course' in headers):
+                                self.log(f"Found form history table with headers: {headers}")
+                                # Process each row in the form table
+                                rows = table.select('tr')
+                                for row in rows:
+                                    # Look for date cells which typically contain race result links
+                                    date_cells = row.select('td:first-child')
+                                    for cell in date_cells:
+                                        # Look for race result links in this cell
+                                        race_links = cell.select('a[href*="/racing/results/"]')
+                                        for race_link in race_links:
+                                            href = race_link['href']
+                                            if href.startswith('/'):
+                                                parsed_base = urlparse(base_url)
+                                                full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                                                
+                                                # Add to database if not already there
+                                                cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                                if not cursor.fetchone():
+                                                    cursor.execute(
+                                                        "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                        (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'races')
+                                                    )
+                                                    crawler_conn.commit()
+                                                    urls_found += 1
+                                                    urls_by_type['races'] += 1
+                                                    self.log(f"Found race link in form history: {full_url}")
+                                                
+                                                # Add to visit queue if not already there
+                                                if full_url not in visited and full_url not in to_visit:
+                                                    to_visit.append(full_url)
+                                                    self.log(f"Added race page to visit queue: {full_url}")
+                        
+                        # If no race links found in table format, try to find any links that look like race results
+                        all_links = soup.select('a[href*="/racing/results/"]')
+                        for link in all_links:
+                            href = link['href']
+                            if href.startswith('/') and '/racing/results/' in href and re.search(r'\/\d+\/', href):
+                                parsed_base = urlparse(base_url)
+                                full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
                                 
-                                for element in trainer_elements:
-                                    # Try to find nearby trainer links
-                                    # Check parent
-                                    parent = element.parent
-                                    if parent:
-                                        trainer_links = parent.select('a[href*="/racing/profiles/trainer/"]')
-                                        # If not found, check adjacent siblings
-                                        if not trainer_links and parent.find_next_sibling():
-                                            trainer_links = parent.find_next_sibling().select('a[href*="/racing/profiles/trainer/"]')
-                                        # Also check previous sibling
-                                        if not trainer_links and parent.find_previous_sibling():
-                                            trainer_links = parent.find_previous_sibling().select('a[href*="/racing/profiles/trainer/"]')
-                                    
-                                    for trainer_link in trainer_links:
-                                        href = trainer_link['href']
-                                        if href.startswith('/'):
-                                            parsed_base = urlparse(base_url)
-                                            full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
-                                            
-                                            # Add to database if not already there
-                                            cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
-                                            if not cursor.fetchone():
-                                                cursor.execute(
-                                                    "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
-                                                    (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'trainers')
-                                                )
-                                                crawler_conn.commit()
-                                                urls_found += 1
-                                                urls_by_type['trainers'] += 1
-                                                self.log(f"Found trainer link near 'Trainer' text: {full_url}")
-                                            
-                                            # Add to visit queue if not already there
-                                            if full_url not in visited and full_url not in to_visit:
-                                                to_visit.insert(0, full_url)
-                                                self.log(f"Prioritized trainer page in visit queue: {full_url}")
+                                # Add to database if not already there
+                                cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                if not cursor.fetchone():
+                                    cursor.execute(
+                                        "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                        (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'races')
+                                    )
+                                    crawler_conn.commit()
+                                    urls_found += 1
+                                    urls_by_type['races'] += 1
+                                    self.log(f"Found race link on horse page: {full_url}")
+                                
+                                # Add to visit queue if not already there
+                                if full_url not in visited and full_url not in to_visit:
+                                    to_visit.append(full_url)
+                                    self.log(f"Added race page to visit queue: {full_url}")
                         
                         # Also find jockey links on horse profile pages
                         jockey_links = soup.select('a[href*="/racing/profiles/jockey/"]')
