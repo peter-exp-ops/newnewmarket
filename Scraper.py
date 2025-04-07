@@ -155,6 +155,9 @@ class ScraperUI:
             # Update the stats
             self.get_database_stats()
             
+            # Update the previous session info
+            self.update_previous_session_info()
+            
         except Exception as e:
             self.log(f"Error connecting to database: {e}")
             self.connection_status_var.set("Connection Failed")
@@ -335,6 +338,12 @@ class ScraperUI:
         self.saturation_var = tk.StringVar(value="5")
         ttk.Entry(saturation_frame, textvariable=self.saturation_var).pack(fill="x", pady=(2, 0))
         
+        # Resume crawl checkbox
+        resume_frame = ttk.Frame(self.crawl_frame)
+        resume_frame.pack(fill="x", padx=5, pady=5)
+        self.resume_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(resume_frame, text="Resume from previous crawl", variable=self.resume_var).pack(anchor="w")
+        
         # Crawl button
         self.crawl_button = ttk.Button(self.crawl_frame, text="Crawl", command=self.start_crawl)
         self.crawl_button.pack(fill="x", padx=5, pady=5)
@@ -358,6 +367,58 @@ class ScraperUI:
         # Saturation label
         self.saturation_rate_var = tk.StringVar(value="Saturation: 0%")
         ttk.Label(progress_frame, textvariable=self.saturation_rate_var).pack(side="left")
+        
+        # Session info frame
+        session_frame = ttk.Frame(self.crawl_frame)
+        session_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Previous session label
+        self.previous_session_var = tk.StringVar(value="Previous session: None")
+        ttk.Label(session_frame, textvariable=self.previous_session_var).pack(side="left")
+        
+        # Get previous session info when frame is created
+        self.update_previous_session_info()
+    
+    def update_previous_session_info(self):
+        """Update information about previous crawl sessions"""
+        if not self.conn:
+            try:
+                # Try to connect temporarily to get the info
+                temp_conn = sqlite3.connect('racing_data.db')
+                cursor = temp_conn.cursor()
+                
+                # Get total URLs count
+                cursor.execute("SELECT COUNT(*) FROM urls")
+                total_urls = cursor.fetchone()[0]
+                
+                # Get last crawl date
+                cursor.execute("SELECT MAX(Date_accessed) FROM urls")
+                last_date = cursor.fetchone()[0]
+                
+                if total_urls > 0 and last_date:
+                    self.previous_session_var.set(f"Previous session: {last_date} ({total_urls} URLs)")
+                else:
+                    self.previous_session_var.set("Previous session: None")
+                
+                temp_conn.close()
+            except:
+                self.previous_session_var.set("Previous session: Unknown")
+        else:
+            # If already connected, use the existing connection
+            cursor = self.conn.cursor()
+            
+            # Get total URLs count
+            cursor.execute("SELECT COUNT(*) FROM urls")
+            total_urls = cursor.fetchone()[0]
+            
+            # Get last crawl date
+            cursor.execute("SELECT MAX(Date_accessed) FROM urls")
+            last_date = cursor.fetchone()[0]
+            
+            if total_urls > 0 and last_date:
+                self.previous_session_var.set(f"Previous session: {last_date} ({total_urls} URLs)")
+            else:
+                self.previous_session_var.set("Previous session: None")
     
     def start_crawl(self):
         """Start the crawling process in a separate thread"""
@@ -409,6 +470,9 @@ class ScraperUI:
             
             # Update stats
             self.get_database_stats()
+            
+            # Update session info
+            self.update_previous_session_info()
     
     def run_crawler(self):
         """Run the web crawler"""
@@ -416,10 +480,13 @@ class ScraperUI:
         timeout_mins = float(self.timeout_var.get())
         max_urls = int(self.max_urls_var.get())
         saturation_limit = float(self.saturation_var.get()) / 100.0  # Convert from percentage to decimal
+        resume_crawl = self.resume_var.get()
         
         try:
             self.log(f"Starting crawl from {base_url}")
             self.log(f"Timeout: {timeout_mins} mins, Max URLs: {max_urls}, Saturation limit: {saturation_limit*100}%")
+            if resume_crawl:
+                self.log("Resuming from previous crawl")
             
             # Create a new database connection for this thread
             try:
@@ -437,7 +504,86 @@ class ScraperUI:
             end_time = start_time + (timeout_mins * 60)
             urls_found = 0
             visited = set()
-            to_visit = [base_url]
+            
+            # Initialize the to_visit list
+            to_visit = []
+            
+            # Initialize session ID for tracking
+            session_id = None
+            
+            # If resuming from previous crawl, initialize from the database
+            if resume_crawl:
+                # Get all URLs that have been processed
+                cursor.execute("SELECT URL FROM urls")
+                processed_urls = set(url[0] for url in cursor.fetchall())
+                
+                # Add all processed URLs to the visited set
+                visited.update(processed_urls)
+                self.log(f"Loaded {len(visited)} URLs from previous crawls")
+                
+                # Get unprocessed URLs to start with
+                cursor.execute("SELECT URL FROM urls WHERE status='unprocessed' ORDER BY Date_accessed DESC LIMIT 500")
+                to_visit = [url[0] for url in cursor.fetchall()]
+                
+                # If no unprocessed URLs, look for profile pages that might lead to new content
+                if not to_visit:
+                    cursor.execute("""
+                        SELECT URL FROM urls 
+                        WHERE (URL LIKE '%/profiles/trainer/%' OR URL LIKE '%/profiles/jockey/%' OR URL LIKE '%/profiles/horse/%')
+                        ORDER BY Date_accessed DESC LIMIT 200
+                    """)
+                    to_visit = [url[0] for url in cursor.fetchall()]
+                
+                # If still no URLs to visit, fall back to base URL
+                if not to_visit:
+                    self.log("No previous URLs to resume from, starting with base URL")
+                    to_visit = [base_url]
+                else:
+                    self.log(f"Resuming with {len(to_visit)} URLs from previous crawl")
+                    
+                # Create a new crawl session record for the resumed crawl
+                cursor.execute(
+                    "CREATE TABLE IF NOT EXISTS crawl_sessions (ID INTEGER PRIMARY KEY AUTOINCREMENT, start_time TIMESTAMP, end_time TIMESTAMP, urls_found INTEGER, base_url TEXT, is_resume BOOLEAN)"
+                )
+                cursor.execute(
+                    "INSERT INTO crawl_sessions (start_time, base_url, is_resume) VALUES (?, ?, ?)",
+                    (time.strftime('%Y-%m-%d %H:%M:%S'), base_url, True)
+                )
+                crawler_conn.commit()
+                
+                # Get the session ID for this crawl
+                cursor.execute("SELECT last_insert_rowid()")
+                session_id = cursor.fetchone()[0]
+                self.log(f"Created resumed crawl session #{session_id}")
+            else:
+                # Not resuming, just start with the base URL
+                to_visit = [base_url]
+                
+                # Create a crawl session record
+                cursor.execute(
+                    "CREATE TABLE IF NOT EXISTS crawl_sessions (ID INTEGER PRIMARY KEY AUTOINCREMENT, start_time TIMESTAMP, end_time TIMESTAMP, urls_found INTEGER, base_url TEXT, is_resume BOOLEAN)"
+                )
+                cursor.execute(
+                    "INSERT INTO crawl_sessions (start_time, base_url, is_resume) VALUES (?, ?, ?)",
+                    (time.strftime('%Y-%m-%d %H:%M:%S'), base_url, False)
+                )
+                crawler_conn.commit()
+                
+                # Get the session ID for this crawl
+                cursor.execute("SELECT last_insert_rowid()")
+                session_id = cursor.fetchone()[0]
+                self.log(f"Created new crawl session #{session_id}")
+            
+            # Create a crawl states table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crawl_state (
+                    session_id INTEGER,
+                    url TEXT,
+                    status TEXT,
+                    timestamp TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES crawl_sessions(ID)
+                )
+            """)
             
             # Count URLs found by type for reporting
             urls_by_type = {
@@ -446,6 +592,20 @@ class ScraperUI:
                 "jockeys": 0,
                 "trainers": 0
             }
+            
+            # Track URLs already in database by type
+            if resume_crawl:
+                cursor.execute("SELECT Type, COUNT(*) FROM urls GROUP BY Type")
+                for type_name, count in cursor.fetchall():
+                    if type_name in urls_by_type:
+                        urls_by_type[type_name] = count
+            
+            # Save URLs visited in this session to a file for future reference
+            session_file = f"crawl_session_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(session_file, 'w') as f:
+                f.write(f"Crawl session started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Base URL: {base_url}\n")
+                f.write(f"Resume: {resume_crawl}\n\n")
             
             # Improved URL patterns with more flexible matching
             url_patterns = {
@@ -496,6 +656,10 @@ class ScraperUI:
                 
                 # Add to visited set
                 visited.add(current_url)
+                
+                # Log the URL to the session file
+                with open(session_file, 'a') as f:
+                    f.write(f"Visiting: {current_url}\n")
                 
                 # Update UI for current progress
                 self.urls_found_var.set(f"URLs found: {urls_found}")
@@ -709,14 +873,19 @@ class ScraperUI:
             
             # Determine why we stopped
             elapsed_time = time.time() - start_time
+            stop_reason = None
             
             if time.time() >= end_time:
+                stop_reason = "timeout"
                 self.log(f"Crawl completed due to timeout ({timeout_mins} mins)")
             elif urls_found >= max_urls:
+                stop_reason = "max_urls_reached"
                 self.log(f"Crawl completed after finding {urls_found} URLs (max: {max_urls})")
             elif not self.crawl_running:
+                stop_reason = "user_stopped"
                 self.log("Crawl was stopped by user")
             else:
+                stop_reason = "completed"
                 self.log(f"Crawl completed in {elapsed_time:.1f} seconds")
             
             self.log(f"Found {urls_found} new URLs")
@@ -726,6 +895,51 @@ class ScraperUI:
             if total_links_found > 0:
                 final_saturation = relevant_links_found / total_links_found
                 self.log(f"Final saturation rate: {final_saturation*100:.1f}%")
+            
+            # Update the crawl session with final statistics
+            if session_id:
+                try:
+                    cursor.execute(
+                        """UPDATE crawl_sessions SET 
+                           end_time = ?, 
+                           urls_found = ?,
+                           stop_reason = ?
+                           WHERE ID = ?""",
+                        (time.strftime('%Y-%m-%d %H:%M:%S'), urls_found, stop_reason, session_id)
+                    )
+                    crawler_conn.commit()
+                    self.log(f"Updated crawl session #{session_id} with final statistics")
+                except Exception as e:
+                    self.log(f"Error updating crawl session: {e}")
+            
+            # Save crawl state for unprocessed URLs
+            try:
+                # Only save a subset of URLs to keep the state table manageable
+                urls_to_save = to_visit[:500]
+                for url in urls_to_save:
+                    cursor.execute(
+                        "INSERT INTO crawl_state (session_id, url, status, timestamp) VALUES (?, ?, ?, ?)",
+                        (session_id, url, "unvisited", time.strftime('%Y-%m-%d %H:%M:%S'))
+                    )
+                crawler_conn.commit()
+                self.log(f"Saved {len(urls_to_save)} URLs in crawl state for future resume")
+            except Exception as e:
+                self.log(f"Error saving crawl state: {e}")
+            
+            # Save final statistics to the session file
+            with open(session_file, 'a') as f:
+                f.write(f"\nCrawl session ended at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Duration: {elapsed_time:.1f} seconds\n")
+                f.write(f"Stop reason: {stop_reason}\n")
+                f.write(f"URLs found: {urls_found}\n")
+                f.write(f"URLs by type: {', '.join([f'{k}: {v}' for k, v in urls_by_type.items()])}\n")
+                f.write(f"Pages visited: {len(visited)}\n")
+                if total_links_found > 0:
+                    final_saturation = relevant_links_found / total_links_found
+                    f.write(f"Final saturation rate: {final_saturation*100:.1f}%\n")
+                f.write(f"Unprocessed URLs remaining: {len(to_visit)}\n")
+            
+            self.log(f"Crawl session details saved to {session_file}")
             
             # Close the crawler's database connection
             if crawler_conn:
