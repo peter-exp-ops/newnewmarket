@@ -32,6 +32,52 @@ HEADERS = {
 
 # === Database Connection Functions ===
 
+def connect_to_database(db_path="racing_data.db"):
+    """
+    Establish connection to the SQLite database
+    
+    Args:
+        db_path (str): Path to the SQLite database file
+        
+    Returns:
+        sqlite3.Connection: Connection object
+    """
+    try:
+        # Use check_same_thread=False to allow connections to be used across threads
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        # Enable foreign keys
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+    except Exception as e:
+        print(f"Error connecting to database: {str(e)}")
+        return None
+
+def check_database_structure():
+    """
+    Check if the database has all required tables
+    
+    Returns:
+        bool: True if all required tables exist
+    """
+    required_tables = ['races', 'horses', 'jockeys', 'trainers', 'racehorses', 'urls']
+    
+    try:
+        conn = connect_to_database()
+        cursor = conn.cursor()
+        
+        # Get all tables in the database
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [table[0] for table in cursor.fetchall()]
+        
+        # Check if all required tables exist
+        all_tables_exist = all(table in tables for table in required_tables)
+        
+        conn.close()
+        return all_tables_exist
+    except Exception as e:
+        print(f"Error checking database structure: {e}")
+        return False
+
 def get_url_status(conn, url):
     """
     Check if a URL has already been processed
@@ -122,6 +168,692 @@ def save_urls_to_database(conn, urls, status="unprocessed"):
     except Exception as e:
         print(f"Error saving URLs to database: {str(e)}")
         return 0
+
+def get_url_stats(conn):
+    """
+    Get statistics of URLs by type and status
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        
+    Returns:
+        dict: Dictionary with URL statistics
+    """
+    try:
+        cursor = conn.cursor()
+        
+        # Check if urls table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+        if not cursor.fetchone():
+            return {"error": "URLs table does not exist"}
+        
+        # Get counts by type and status
+        cursor.execute("""
+            SELECT 
+                COALESCE(type, 'unknown') as type,
+                COALESCE(status, 'unknown') as status,
+                COUNT(*) as count
+            FROM urls
+            GROUP BY type, status
+            ORDER BY type, status
+        """)
+        
+        results = cursor.fetchall()
+        
+        # Process results into a structured format
+        stats = {
+            "types": set(),
+            "statuses": set(),
+            "counts": {},
+            "totals": {"by_type": {}, "by_status": {}, "overall": 0}
+        }
+        
+        # Define status mapping to standardize status names
+        status_mapping = {
+            "successful": "succeeded",
+            "success": "succeeded",
+            "completed": "succeeded",
+            "processed": "succeeded",
+            "error": "failed",
+            "errors": "failed",
+            "failure": "failed"
+        }
+        
+        for row in results:
+            type_name = row[0] 
+            status = row[1].lower()  # Normalize to lowercase
+            count = row[2]
+            
+            # Map status to standard names if needed
+            if status in status_mapping:
+                status = status_mapping[status]
+            
+            # Add to sets
+            stats["types"].add(type_name)
+            stats["statuses"].add(status)
+            
+            # Add counts
+            if type_name not in stats["counts"]:
+                stats["counts"][type_name] = {}
+            
+            # Add or increment count
+            if status in stats["counts"][type_name]:
+                stats["counts"][type_name][status] += count
+            else:
+                stats["counts"][type_name][status] = count
+            
+            # Update totals
+            if type_name not in stats["totals"]["by_type"]:
+                stats["totals"]["by_type"][type_name] = 0
+            if status not in stats["totals"]["by_status"]:
+                stats["totals"]["by_status"][status] = 0
+                
+            stats["totals"]["by_type"][type_name] += count
+            stats["totals"]["by_status"][status] += count
+            stats["totals"]["overall"] += count
+        
+        # Convert sets to sorted lists
+        stats["types"] = sorted(list(stats["types"]))
+        stats["statuses"] = sorted(list(stats["statuses"]))
+        
+        return stats
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+# === Crawling Functions ===
+
+def crawl_website(base_url, max_urls=1000, data_type=None, log_callback=None, progress_callback=None, conn=None, timeout_callback=None):
+    """
+    Crawl a website to find URLs matching a specific data type
+    
+    Args:
+        base_url (str): Base URL to start crawling from
+        max_urls (int): Maximum number of URLs to discover
+        data_type (str): Type of data to look for ('races', 'horses', 'jockeys', 'trainers')
+        log_callback (function): Callback function for logging
+        progress_callback (function): Callback function for updating progress
+        conn (sqlite3.Connection): Database connection
+        timeout_callback (function): Callback function to check if timeout has been reached
+        
+    Returns:
+        list: List of discovered URLs
+    """
+    # Check if the required tables exist
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+        if not cursor.fetchone():
+            if log_callback:
+                log_callback("Required table 'urls' does not exist in the database")
+            return []
+
+    discovered_urls = []
+    visited_urls = set()
+    urls_to_visit = [base_url]
+    
+    # Get already captured URLs from database
+    captured_urls = {}
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT url, success FROM urls")
+        captured_urls = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    # Log function (use callback if provided, otherwise print)
+    def log(message):
+        if log_callback:
+            log_callback(message)
+        else:
+            print(message)
+    
+    # Update progress if callback provided
+    def update_progress(current, total):
+        if progress_callback:
+            percent = min(100, int((current / total) * 100))
+            progress_callback(percent)
+    
+    # Define URL patterns for each type - more strict patterns
+    url_patterns = {
+        'jockeys': re.compile(r'/racing/profiles/jockey/\d+$'),
+        'trainers': re.compile(r'/racing/profiles/trainer/\d+$'),
+        'horses': re.compile(r'/racing/profiles/horse/\d+$'),  # Strict pattern ensuring it ends with the horse ID
+        'races': re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}/[^/]+/\d+/\d+$')  # Must include course and race ID
+    }
+    
+    # Useful patterns that we follow but don't save
+    date_pattern = re.compile(r'/racing/results/\d{4}-\d{2}-\d{2}$')
+    
+    # Add debugging
+    log(f"Initial queue: {urls_to_visit}")
+    log(f"Using patterns: {[p.pattern for p in url_patterns.values()]}")
+    
+    # Helper function to normalize URLs
+    def normalize_url(url):
+        # Ensure it's an absolute URL
+        if url.startswith('/'):
+            url = 'https://www.sportinglife.com' + url
+        # Remove trailing slash if present
+        if url.endswith('/'):
+            url = url[:-1]
+        return url
+    
+    # Helper function to determine URL type
+    def get_url_type(url):
+        for type_name, pattern in url_patterns.items():
+            if pattern.search(url):
+                return type_name
+        return None
+    
+    # Log start of crawl
+    log(f"Starting crawl from {base_url}")
+    log(f"Skipping {len([u for u, s in captured_urls.items() if s == 1])} URLs already successfully captured")
+    
+    # Initialize counters for summary
+    pages_checked = 0
+    skipped_count = 0
+    found_by_type = {'races': 0, 'jockeys': 0, 'trainers': 0, 'horses': 0}
+    no_new_urls_count = 0
+    consecutive_empty_count = 0
+    
+    # Process URLs in queue until max_urls discovered or queue empty
+    while urls_to_visit and len(discovered_urls) < max_urls:
+        # Get the next URL to visit
+        current_url = urls_to_visit.pop(0)
+        
+        # Skip if already visited
+        if current_url in visited_urls:
+            continue
+        
+        # Skip if already successfully captured in database
+        if current_url in captured_urls and captured_urls[current_url] == 1:
+            skipped_count += 1
+            continue
+        
+        # Mark as visited
+        visited_urls.add(current_url)
+        pages_checked += 1
+        
+        # Check for timeout
+        if timeout_callback and timeout_callback():
+            log("Timeout reached. Stopping crawl.")
+            break
+        
+        # Update progress
+        update_progress(len(discovered_urls), max_urls)
+        
+        # Log progress periodically
+        if pages_checked % 20 == 0:
+            log(f"Progress: Checked {pages_checked} pages, found {len(discovered_urls)} matching URLs " +
+                f"(Races: {found_by_type['races']}, Jockeys: {found_by_type['jockeys']}, " +
+                f"Trainers: {found_by_type['trainers']}, Horses: {found_by_type['horses']})")
+        
+        try:
+            # Add small delay to avoid overloading the server
+            time.sleep(random.uniform(0.2, 0.5))
+            
+            # Make request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(current_url, headers=headers, timeout=10)
+            
+            # Skip error pages
+            if response.status_code != 200:
+                continue
+            
+            # First, check if this URL matches any of our target types
+            url_type = get_url_type(current_url)
+            if url_type and current_url not in discovered_urls:
+                discovered_urls.append(current_url)
+                found_by_type[url_type] += 1
+                
+                # Save new URL to database immediately with success=0 (not processed)
+                if conn:
+                    try:
+                        # Get current timestamp
+                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        cursor = conn.cursor()
+                        
+                        # Add to URLs table with success=0 (not scraped)
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
+                            (current_url, timestamp, "unprocessed", url_type)
+                        )
+                        conn.commit()
+                    except Exception as db_error:
+                        log(f"Error saving URL to database: {str(db_error)}")
+                
+                # Log discovery
+                if len(discovered_urls) % 10 == 0:
+                    log(f"Found {len(discovered_urls)} matching URLs so far")
+                
+                # If we've reached max_urls, stop
+                if len(discovered_urls) >= max_urls:
+                    log(f"Reached maximum URL limit of {max_urls}")
+                    break
+            
+            # Continue crawling by parsing HTML and finding more links
+            soup = BeautifulSoup(response.text, 'html.parser')
+            found_new_urls = False
+            
+            # Find all links
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                
+                # Convert relative URLs to absolute
+                if href.startswith('/'):
+                    href = "https://www.sportinglife.com" + href
+                # Skip non-http links
+                elif not (href.startswith('http://') or href.startswith('https://')):
+                    continue
+                # Skip external links
+                elif 'sportinglife.com' not in href:
+                    continue
+                
+                # Skip URLs already in discovered
+                if href in discovered_urls:
+                    continue
+                
+                # Skip URLs already successfully processed in database
+                if href in captured_urls and captured_urls[href] == 1:
+                    continue
+                
+                # Skip URLs already in visit queue
+                if href in urls_to_visit or href in visited_urls:
+                    continue
+                
+                # Check if URL matches any of our patterns
+                link_type = get_url_type(href)
+                if link_type:
+                    if href not in urls_to_visit:
+                        urls_to_visit.append(href)
+                        found_new_urls = True
+                
+                # Special handling for race dates (add these with high priority)
+                elif '/racing/results/' in href and re.search(r'/\d{4}-\d{2}-\d{2}', href):
+                    if href not in urls_to_visit and href not in visited_urls:
+                        # Insert near the beginning for priority (but not at index 0)
+                        insert_pos = min(10, len(urls_to_visit))
+                        urls_to_visit.insert(insert_pos, href)
+                        found_new_urls = True
+                
+                # Add other sportinglife.com racing URLs with lower priority
+                elif '/racing/' in href and href not in urls_to_visit and href not in visited_urls:
+                    urls_to_visit.append(href)
+                    found_new_urls = True
+            
+            # Track consecutive pages with no new URLs (to detect when we're not making progress)
+            if not found_new_urls:
+                consecutive_empty_count += 1
+                if consecutive_empty_count >= 50:
+                    log("No new URLs found in 50 consecutive pages. Stopping crawl.")
+                    break
+            else:
+                consecutive_empty_count = 0
+                
+        except requests.exceptions.RequestException as e:
+            # Handle request exceptions gracefully
+            if "timeout" in str(e).lower():
+                log(f"Request timeout for {current_url}")
+            elif "connection" in str(e).lower():
+                log(f"Connection error for {current_url}")
+            else:
+                log(f"Request error for {current_url}: {str(e)}")
+        except Exception as e:
+            log(f"Error processing URL {current_url}: {str(e)}")
+    
+    # Update progress to 100% when done
+    update_progress(100, 100)
+    
+    # Log final summary
+    log(f"Crawl complete. Found {len(discovered_urls)} matching URLs after checking {pages_checked} pages")
+    log(f"Races: {found_by_type['races']}, Jockeys: {found_by_type['jockeys']}, Trainers: {found_by_type['trainers']}, Horses: {found_by_type['horses']}")
+    log(f"Skipped {skipped_count} URLs already successfully captured")
+    
+    # Save discovered URLs to database if not already saved above
+    if conn and discovered_urls:
+        try:
+            # Check if URLs table exists
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
+            if not cursor.fetchone():
+                log("Required table 'urls' does not exist in the database")
+                return discovered_urls
+            
+            # Get current timestamp
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Prepare batch of values for insertion
+            url_data = []
+            for url in discovered_urls:
+                url_type = get_url_type(url)
+                url_data.append((url, timestamp, "unprocessed", url_type))
+            
+            # Insert URLs in batches to improve performance
+            cursor.executemany(
+                "INSERT OR IGNORE INTO urls (url, date_accessed, status, type) VALUES (?, ?, ?, ?)",
+                url_data
+            )
+            conn.commit()
+            
+            log(f"All discovered URLs added to database")
+        except Exception as e:
+            log(f"Error batch saving URLs to database: {str(e)}")
+    
+    return discovered_urls
+
+def filter_urls_by_type(urls, url_type):
+    """
+    Filter URLs by data type
+    
+    Args:
+        urls (list): List of URLs
+        url_type (str): Type of data ('races', 'horses', 'jockeys', 'trainers')
+        
+    Returns:
+        list: Filtered list of URLs
+    """
+    # URL patterns to match for different types
+    url_patterns = {
+        'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+$',
+        'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+$',
+        'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
+        'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+$'  # Strict pattern with $ to match end of URL
+    }
+    
+    # If we want all types, return all URLs that match any pattern
+    if url_type == 'all':
+        filtered_urls = []
+        for url in urls:
+            if any(re.match(pattern, url) for pattern in url_patterns.values()):
+                filtered_urls.append(url)
+        return filtered_urls
+    
+    # Get pattern for the specified type
+    pattern = url_patterns.get(url_type)
+    if not pattern:
+        return []  # Invalid type
+    
+    # Return URLs that match the pattern
+    return [url for url in urls if re.match(pattern, url)]
+
+# === Scraping Functions ===
+
+def scrape_race_page(url):
+    """
+    Scrape a race results page to extract race and finishing order information
+    
+    Args:
+        url (str): URL of the race results page
+        
+    Returns:
+        dict: Extracted race data or None if scraping failed
+    """
+    # Placeholder function for race scraping
+    # This will be updated in a future version
+    return None
+
+def scrape_horse_page(url):
+    """
+    Scrape a horse profile page to extract horse information
+    
+    Args:
+        url (str): URL of the horse profile page
+        
+    Returns:
+        dict: Extracted horse data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract horse ID from URL
+        horse_id = int(url.split('/')[-1])
+        
+        # Extract horse name from the page header
+        horse_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not horse_name:
+            print(f"Could not find horse name at URL: {url}")
+            return None
+            
+        return {
+            'id': horse_id,
+            'name': horse_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping horse page {url}: {str(e)}")
+        return None
+
+def scrape_jockey_page(url):
+    """
+    Scrape a jockey profile page to extract jockey information
+    
+    Args:
+        url (str): URL of the jockey profile page
+        
+    Returns:
+        dict: Extracted jockey data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract jockey ID from URL
+        jockey_id = int(url.split('/')[-1])
+        
+        # Extract jockey name from the page header
+        jockey_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not jockey_name:
+            print(f"Could not find jockey name at URL: {url}")
+            return None
+            
+        return {
+            'id': jockey_id,
+            'name': jockey_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping jockey page {url}: {str(e)}")
+        return None
+
+def scrape_trainer_page(url):
+    """
+    Scrape a trainer profile page to extract trainer information
+    
+    Args:
+        url (str): URL of the trainer profile page
+        
+    Returns:
+        dict: Extracted trainer data or None if scraping failed
+    """
+    try:
+        response = requests.get(url, headers=HEADERS)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract trainer ID from URL
+        trainer_id = int(url.split('/')[-1])
+        
+        # Extract trainer name from the page header
+        trainer_name = soup.find('h1').text.strip() if soup.find('h1') else None
+        
+        if not trainer_name:
+            print(f"Could not find trainer name at URL: {url}")
+            return None
+            
+        return {
+            'id': trainer_id,
+            'name': trainer_name
+        }
+        
+    except Exception as e:
+        print(f"Error scraping trainer page {url}: {str(e)}")
+        return None
+
+def scrape_urls_by_type(urls, url_type, limit, conn=None, log_callback=None, progress_callback=None):
+    """
+    Scrape a list of URLs of a specific type
+    
+    Args:
+        urls (list): List of URLs to scrape
+        url_type (str): Type of URLs ('horses', 'jockeys', 'trainers', 'races')
+        limit (int): Maximum number of URLs to scrape
+        conn (sqlite3.Connection, optional): Database connection
+        log_callback (function, optional): Function to call for logging
+        progress_callback (function, optional): Function to call for progress updates
+        
+    Returns:
+        list: List of scraped data
+    """
+    # Initialize variables
+    results = []
+    count = 0
+    success_count = 0
+    
+    # Should we close the connection when done?
+    close_conn = False
+    if not conn:
+        conn = connect_to_database()
+        close_conn = True
+    
+    # Define a default log function if none provided
+    if not log_callback:
+        log_callback = print
+        
+    # Limit the number of URLs to process
+    urls_to_process = urls[:min(limit, len(urls))]
+    total_urls = len(urls_to_process)
+    
+    log_callback(f"Starting to scrape {total_urls} {url_type} URLs...")
+    
+    # Process each URL
+    for i, url in enumerate(urls_to_process):
+        try:
+            # Update progress if callback provided
+            if progress_callback:
+                progress_callback(i / total_urls * 100)
+                
+            log_callback(f"Scraping {url_type} URL ({i+1}/{total_urls}): {url}")
+            
+            # Scrape based on URL type
+            data = None
+            if url_type == 'horses':
+                data = scrape_horse_page(url)
+            elif url_type == 'jockeys':
+                data = scrape_jockey_page(url)
+            elif url_type == 'trainers':
+                data = scrape_trainer_page(url)
+            elif url_type == 'races':
+                data = scrape_race_page(url)
+                
+            # Check if we got data
+            if data:
+                results.append(data)
+                success_count += 1
+                
+                # Update database status
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "succeeded", url)
+                )
+                
+                # Save data to appropriate table
+                if url_type == 'horses':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO horses (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                elif url_type == 'jockeys':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO jockeys (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                elif url_type == 'trainers':
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO trainers (ID, Name) VALUES (?, ?)",
+                        (data['id'], data['name'])
+                    )
+                
+                conn.commit()
+                log_callback(f"Saved {url_type[:-1]} {data.get('name', '')}")
+            else:
+                # Update database with failed status
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "failed", url)
+                )
+                conn.commit()
+                log_callback(f"Failed to scrape {url_type} URL: {url}")
+                
+            # Increment count
+            count += 1
+            
+        except Exception as e:
+            log_callback(f"Error processing {url}: {str(e)}")
+            # Update database with failed status
+            try:
+                cursor = conn.cursor()
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute(
+                    "UPDATE urls SET date_accessed = ?, status = ? WHERE url = ?",
+                    (timestamp, "failed", url)
+                )
+                conn.commit()
+            except Exception as db_error:
+                log_callback(f"Error updating URL status: {str(db_error)}")
+                
+            count += 1
+    
+    # Close connection if we opened it
+    if close_conn and conn:
+        conn.close()
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(100)
+        
+    log_callback(f"Finished scraping {count} {url_type} URLs. Successfully scraped: {success_count}")
+    
+    return results
+
+def process_scraped_data(conn, data, data_type):
+    """
+    Placeholder for data processing function - does not implement actual processing
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        data (list): Scraped data (empty in this implementation)
+        data_type (str): Type of data ('races', 'horses', 'jockeys', 'trainers')
+    """
+    self.log(f"No data processing implemented as requested")
+    return
+
+def save_data_to_database(conn, data, data_type):
+    """
+    Save processed data to the database
+    
+    Args:
+        conn (sqlite3.Connection): Database connection
+        data (list): Processed data
+        data_type (str): Type of data ('races', 'horses', 'jockeys', 'trainers')
+        
+    Returns:
+        int: Number of records saved
+    """
+    # Function implementation will go here
+    pass
 
 # === UI Class ===
 
@@ -291,33 +1023,13 @@ class CollectorUI:
         ttk.Button(control_frame, text="Exit", 
                   command=self.root.destroy).pack(side=tk.RIGHT, padx=5)
     
-    def _connect_to_database(self, db_path="racing_data.db"):
-        """
-        Private helper method to establish connection to the SQLite database
-        
-        Args:
-            db_path (str): Path to the SQLite database file
-            
-        Returns:
-            sqlite3.Connection: Connection object
-        """
-        try:
-            # Use check_same_thread=False to allow connections to be used across threads
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            # Enable foreign keys
-            conn.execute("PRAGMA foreign_keys = ON")
-            return conn
-        except Exception as e:
-            self.log(f"Error connecting to database: {str(e)}")
-            return None
-    
     def connect_to_db(self):
-        """Connect to the database and initialize UI components"""
+        """Connect to the database"""
         try:
             if self.conn is not None:
                 self.conn.close()
                 
-            self.conn = self._connect_to_database()
+            self.conn = self.connect_to_database()
             
             # Check if the database has all required tables
             if self.check_database_structure():
@@ -366,6 +1078,26 @@ class CollectorUI:
             self.log(f"Error checking database structure: {e}")
             return False
     
+    def connect_to_database(self, db_path="racing_data.db"):
+        """
+        Establish connection to the SQLite database
+        
+        Args:
+            db_path (str): Path to the SQLite database file
+            
+        Returns:
+            sqlite3.Connection: Connection object
+        """
+        try:
+            # Use check_same_thread=False to allow connections to be used across threads
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys = ON")
+            return conn
+        except Exception as e:
+            self.log(f"Error connecting to database: {str(e)}")
+            return None
+    
     def crawl_website(self):
         """
         Crawl the website to find URLs of races, jockeys, trainers, and horses.
@@ -396,7 +1128,7 @@ class CollectorUI:
                     elapsed_time = time.time() - start_time
                     return elapsed_time > timeout_seconds
                 
-                conn = self._connect_to_database()
+                conn = self.connect_to_database()
                 if not conn:
                     self.log("Failed to connect to database.")
                     return
@@ -723,7 +1455,7 @@ class CollectorUI:
                 self.log(f"Starting scrape of unprocessed URLs with limit {url_limit} and timeout {timeout_mins} mins")
                 
                 # Connect to database
-                conn = self._connect_to_database()
+                conn = self.connect_to_database()
                 if not conn:
                     self.log("Failed to connect to database")
                     self.scrape_stats_var.set("Error: Database connection failed")
@@ -774,11 +1506,11 @@ class CollectorUI:
                         
                         data = None
                         if url_type == 'trainers':
-                            data = self.scrape_entity_page(url, 'trainers')
+                            data = self.scrape_trainer_page(url)
                         elif url_type == 'jockeys':
-                            data = self.scrape_entity_page(url, 'jockeys')
+                            data = self.scrape_jockey_page(url)
                         elif url_type == 'horses':
-                            data = self.scrape_entity_page(url, 'horses')
+                            data = self.scrape_horse_page(url)
                         
                         # Update database with scraped status
                         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -845,12 +1577,21 @@ class CollectorUI:
         # Run scraper in a separate thread
         threading.Thread(target=run_scraper, daemon=True).start()
     
-    def log(self, message):
-        """Add a message to the log with timestamp"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def log_message(self, message):
+        """Log a message to the UI"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
+        self.log_text.see(tk.END)  # Scroll to the end
+        # Update the UI immediately to show the new log entry
+        self.root.update()  # Forces an immediate update of the UI
+
+    def log(self, message):
+        """Log a message to the UI"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)  # Scroll to the end
+        # Update the UI immediately to show the new log entry
+        self.root.update()  # Forces an immediate update of the UI
 
     def save_urls_to_database(self, conn, urls, status="unprocessed"):
         """
@@ -930,7 +1671,7 @@ class CollectorUI:
                 self.log("Please connect to the database first")
                 return
             
-            stats = self.get_url_stats()
+            stats = get_url_stats(self.conn)
             self.display_url_stats(stats)
             self.log("URL statistics updated")
         except Exception as e:
@@ -1016,48 +1757,6 @@ class CollectorUI:
                      anchor="center", font=("", 9, "bold")).grid(row=row, column=col)
             col += 1
 
-    def scrape_entity_page(self, url, entity_type):
-        """
-        Generic scraper for entity profile pages (trainers, jockeys, horses)
-        
-        Args:
-            url (str): URL of the profile page
-            entity_type (str): Type of entity ('trainers', 'jockeys', 'horses')
-            
-        Returns:
-            dict: Extracted entity data or None if scraping failed
-        """
-        try:
-            response = requests.get(url, headers=HEADERS)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract entity ID from URL
-            entity_id = int(url.split('/')[-1])
-            
-            # Extract entity name from the page header
-            entity_name = soup.find('h1').text.strip() if soup.find('h1') else None
-            
-            if not entity_name:
-                self.log(f"Could not find {entity_type[:-1]} name at URL: {url}")
-                return None
-            
-            # Create basic data dictionary
-            data = {
-                'id': entity_id,
-                'name': entity_name
-            }
-            
-            # Add extra processing for specific entity types if needed in the future
-            # For example, horses might have additional data to extract
-            
-            return data
-            
-        except Exception as e:
-            self.log(f"Error scraping {entity_type[:-1]} page {url}: {str(e)}")
-            return None
-    
     def scrape_trainer_page(self, url):
         """
         Scrape a trainer profile page to extract trainer information
@@ -1068,7 +1767,30 @@ class CollectorUI:
         Returns:
             dict: Extracted trainer data or None if scraping failed
         """
-        return self.scrape_entity_page(url, 'trainers')
+        try:
+            response = requests.get(url, headers=HEADERS)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract trainer ID from URL
+            trainer_id = int(url.split('/')[-1])
+            
+            # Extract trainer name from the page header
+            trainer_name = soup.find('h1').text.strip() if soup.find('h1') else None
+            
+            if not trainer_name:
+                print(f"Could not find trainer name at URL: {url}")
+                return None
+                
+            return {
+                'id': trainer_id,
+                'name': trainer_name
+            }
+            
+        except Exception as e:
+            print(f"Error scraping trainer page {url}: {str(e)}")
+            return None
     
     def scrape_jockey_page(self, url):
         """
@@ -1080,7 +1802,30 @@ class CollectorUI:
         Returns:
             dict: Extracted jockey data or None if scraping failed
         """
-        return self.scrape_entity_page(url, 'jockeys')
+        try:
+            response = requests.get(url, headers=HEADERS)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract jockey ID from URL
+            jockey_id = int(url.split('/')[-1])
+            
+            # Extract jockey name from the page header
+            jockey_name = soup.find('h1').text.strip() if soup.find('h1') else None
+            
+            if not jockey_name:
+                print(f"Could not find jockey name at URL: {url}")
+                return None
+                
+            return {
+                'id': jockey_id,
+                'name': jockey_name
+            }
+            
+        except Exception as e:
+            print(f"Error scraping jockey page {url}: {str(e)}")
+            return None
     
     def scrape_horse_page(self, url):
         """
@@ -1092,7 +1837,30 @@ class CollectorUI:
         Returns:
             dict: Extracted horse data or None if scraping failed
         """
-        return self.scrape_entity_page(url, 'horses')
+        try:
+            response = requests.get(url, headers=HEADERS)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract horse ID from URL
+            horse_id = int(url.split('/')[-1])
+            
+            # Extract horse name from the page header
+            horse_name = soup.find('h1').text.strip() if soup.find('h1') else None
+            
+            if not horse_name:
+                print(f"Could not find horse name at URL: {url}")
+                return None
+                
+            return {
+                'id': horse_id,
+                'name': horse_name
+            }
+            
+        except Exception as e:
+            print(f"Error scraping horse page {url}: {str(e)}")
+            return None
     
     def save_entity_to_database(self, conn, data, data_type):
         """
@@ -1186,132 +1954,28 @@ class CollectorUI:
             conn.rollback()
             return False
 
-    def get_url_stats(self):
-        """
-        Get statistics of URLs by type and status
+def delete_crawl_state_file(filename="crawl_state.json"):
+    """
+    Delete crawl state file if it exists
+    
+    Args:
+        filename (str): File to delete
         
-        Returns:
-            dict: Dictionary with URL statistics
-        """
-        try:
-            if not self.conn:
-                return {"error": "Not connected to database"}
-                
-            cursor = self.conn.cursor()
-            
-            # Check if urls table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='urls'")
-            if not cursor.fetchone():
-                return {"error": "URLs table does not exist"}
-            
-            # Get counts by type and status
-            cursor.execute("""
-                SELECT 
-                    COALESCE(type, 'unknown') as type,
-                    COALESCE(status, 'unknown') as status,
-                    COUNT(*) as count
-                FROM urls
-                GROUP BY type, status
-                ORDER BY type, status
-            """)
-            
-            results = cursor.fetchall()
-            
-            # Process results into a structured format
-            stats = {
-                "types": set(),
-                "statuses": set(),
-                "counts": {},
-                "totals": {"by_type": {}, "by_status": {}, "overall": 0}
-            }
-            
-            # Define status mapping to standardize status names
-            status_mapping = {
-                "successful": "succeeded",
-                "success": "succeeded",
-                "completed": "succeeded",
-                "processed": "succeeded",
-                "error": "failed",
-                "errors": "failed",
-                "failure": "failed"
-            }
-            
-            for row in results:
-                type_name = row[0] 
-                status = row[1].lower()  # Normalize to lowercase
-                count = row[2]
-                
-                # Map status to standard names if needed
-                if status in status_mapping:
-                    status = status_mapping[status]
-                
-                # Add to sets
-                stats["types"].add(type_name)
-                stats["statuses"].add(status)
-                
-                # Add counts
-                if type_name not in stats["counts"]:
-                    stats["counts"][type_name] = {}
-                
-                # Add or increment count
-                if status in stats["counts"][type_name]:
-                    stats["counts"][type_name][status] += count
-                else:
-                    stats["counts"][type_name][status] = count
-                
-                # Update totals
-                if type_name not in stats["totals"]["by_type"]:
-                    stats["totals"]["by_type"][type_name] = 0
-                if status not in stats["totals"]["by_status"]:
-                    stats["totals"]["by_status"][status] = 0
-                    
-                stats["totals"]["by_type"][type_name] += count
-                stats["totals"]["by_status"][status] += count
-                stats["totals"]["overall"] += count
-            
-            # Convert sets to sorted lists
-            stats["types"] = sorted(list(stats["types"]))
-            stats["statuses"] = sorted(list(stats["statuses"]))
-            
-            return stats
-            
-        except Exception as e:
-            return {"error": str(e)}
+    Returns:
+        bool: True if file was deleted, False if it doesn't exist
+    """
+    try:
+        if os.path.isfile(filename):
+            os.remove(filename)
+            print(f"Deleted crawl state file: {filename}")
+            return True
+        return False
+    except Exception as e:
+        print(f"Error deleting crawl state file: {str(e)}")
+        return False
 
-    def filter_urls_by_type(self, urls, url_type):
-        """
-        Filter URLs by data type
-        
-        Args:
-            urls (list): List of URLs
-            url_type (str): Type of data ('races', 'horses', 'jockeys', 'trainers')
-            
-        Returns:
-            list: Filtered list of URLs
-        """
-        # URL patterns to match for different types
-        url_patterns = {
-            'jockeys': r'https?://www\.sportinglife\.com/racing/profiles/jockey/\d+$',
-            'trainers': r'https?://www\.sportinglife\.com/racing/profiles/trainer/\d+$',
-            'races': r'https?://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+',
-            'horses': r'https?://www\.sportinglife\.com/racing/profiles/horse/\d+$'  # Strict pattern with $ to match end of URL
-        }
-        
-        # If we want all types, return all URLs that match any pattern
-        if url_type == 'all':
-            filtered_urls = []
-            for url in urls:
-                if any(re.match(pattern, url) for pattern in url_patterns.values()):
-                    filtered_urls.append(url)
-            return filtered_urls
-        
-        # Get pattern for the specified type
-        pattern = url_patterns.get(url_type)
-        if not pattern:
-            return []  # Invalid type
-        
-        # Return URLs that match the pattern
-        return [url for url in urls if re.match(pattern, url)]
+# Try to delete the state file at import time
+delete_crawl_state_file()
 
 # === Main Entry Point ===
 
