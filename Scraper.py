@@ -8,8 +8,6 @@ This script provides a basic user interface for scraping racing data
 with sections for database connection, crawling, scraping, and output.
 """
 
-print("Starting Scraper.py...")
-
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import os
@@ -19,7 +17,6 @@ import pandas as pd
 
 class ScraperUI:
     def __init__(self, root):
-        print("Initializing ScraperUI...")
         self.root = root
         self.root.title("Newmarket - Racing Data Scraper")
         self.root.geometry("800x600")
@@ -71,7 +68,6 @@ class ScraperUI:
     
     def create_scrollable_canvas(self):
         """Create a scrollable canvas for the main content"""
-        print("Creating scrollable canvas...")
         # Create a frame with scrollbar
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
@@ -227,7 +223,6 @@ class ScraperUI:
     
     def create_database_frame(self):
         """Create the database connection section"""
-        print("Creating database frame...")
         self.db_frame = ttk.LabelFrame(self.content_frame, text="Database Connection")
         self.db_frame.grid(row=0, column=0, padx=5, pady=(0, 2), sticky="ew")
         
@@ -296,7 +291,6 @@ class ScraperUI:
     
     def create_crawl_frame(self):
         """Create the crawl section"""
-        print("Creating crawl frame...")
         self.crawl_frame = ttk.LabelFrame(self.content_frame, text="Crawl")
         self.crawl_frame.grid(row=1, column=0, padx=5, pady=2, sticky="ew")
         
@@ -337,7 +331,6 @@ class ScraperUI:
     
     def create_scrape_frame(self):
         """Create the scrape section"""
-        print("Creating scrape frame...")
         self.scrape_frame = ttk.LabelFrame(self.content_frame, text="Scrape")
         self.scrape_frame.grid(row=2, column=0, padx=5, pady=2, sticky="ew")
         
@@ -349,7 +342,6 @@ class ScraperUI:
     
     def create_output_frame(self):
         """Create the output section"""
-        print("Creating output frame...")
         self.output_frame = ttk.LabelFrame(self.content_frame, text="Output")
         self.output_frame.grid(row=3, column=0, padx=5, pady=(2, 0), sticky="ew")
         
@@ -369,21 +361,15 @@ class ScraperUI:
 
 def main():
     """Main function to run the application"""
-    print(f"Python version: {sys.version}")
-    print(f"Tkinter version: {tk.TkVersion}")
     
     root = tk.Tk()
     app = ScraperUI(root)
-    print("Starting main loop...")
     
     # This will block until the window is closed
     root.mainloop()
-    
-    print("Main loop exited.")
 
 # Make sure this block executes properly
 if __name__ == "__main__":
-    print("Initializing Scraper application...")
     try:
         main()
     except Exception as e:
