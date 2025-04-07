@@ -21,6 +21,7 @@ class ScraperUI:
         self.default_base_url = "https://www.sportinglife.com/racing/results/"
         self.default_timeout = "1"
         self.default_max_urls = "100"
+        self.default_saturation_limit = "5"
         
         # Create main sections
         self.create_database_section()
@@ -157,9 +158,9 @@ class ScraperUI:
 
         # Base URL
         ttk.Label(crawl_frame, text="Base URL:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.base_url_entry = ttk.Entry(crawl_frame, width=50)
+        self.base_url_entry = ttk.Entry(crawl_frame)
         self.base_url_entry.insert(0, self.default_base_url)
-        self.base_url_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.base_url_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
 
         # Timeout
         ttk.Label(crawl_frame, text="Timeout (mins):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
@@ -172,10 +173,16 @@ class ScraperUI:
         self.max_urls_entry = ttk.Entry(crawl_frame, width=10)
         self.max_urls_entry.insert(0, self.default_max_urls)
         self.max_urls_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        
+        # Saturation Limit
+        ttk.Label(crawl_frame, text="Saturation limit (%):").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.saturation_limit_entry = ttk.Entry(crawl_frame, width=10)
+        self.saturation_limit_entry.insert(0, self.default_saturation_limit)
+        self.saturation_limit_entry.grid(row=3, column=1, padx=5, pady=5, sticky="w")
 
         # Crawl Button
         crawl_btn = ttk.Button(crawl_frame, text="Crawl")
-        crawl_btn.grid(row=3, column=0, columnspan=2, pady=10, sticky="ew")
+        crawl_btn.grid(row=4, column=0, columnspan=2, pady=10, sticky="ew")
 
     def create_scrape_section(self):
         # Scrape Frame
