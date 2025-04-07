@@ -458,6 +458,13 @@ class ScraperUI:
             # Additional pattern for profile links that might need special handling
             profile_pattern = re.compile(r'https?://www\.sportinglife\.com/racing/profiles/(horse|jockey|trainer)/\d+')
             
+            # Define patterns for incomplete/relative URLs
+            relative_patterns = {
+                "jockeys": re.compile(r'/racing/profiles/jockey/\d+'),
+                "trainers": re.compile(r'/racing/profiles/trainer/\d+'),
+                "horses": re.compile(r'/racing/profiles/horse/\d+')
+            }
+            
             # Initialize statistics for saturation calculation
             total_links_found = 0
             relevant_links_found = 0
@@ -510,6 +517,30 @@ class ScraperUI:
                     # Parse HTML
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
+                    # Check if this page is a profile page that we missed earlier
+                    if '/profiles/jockey/' in current_url or '/profiles/trainer/' in current_url:
+                        url_type = None
+                        if '/profiles/jockey/' in current_url:
+                            url_type = 'jockeys'
+                            self.log(f"This is a jockey profile page: {current_url}")
+                        elif '/profiles/trainer/' in current_url:
+                            url_type = 'trainers'
+                            self.log(f"This is a trainer profile page: {current_url}")
+                            
+                        if url_type:
+                            # Check if this URL is already in the database
+                            cursor.execute("SELECT ID FROM urls WHERE URL = ?", (current_url,))
+                            if not cursor.fetchone():  # URL doesn't exist in the database
+                                # Add to database with status='unprocessed'
+                                cursor.execute(
+                                    "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                    (current_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', url_type)
+                                )
+                                crawler_conn.commit()
+                                urls_found += 1
+                                urls_by_type[url_type] += 1
+                                self.log(f"Added {url_type} profile page to database: {current_url}")
+                    
                     # Find all links
                     links = soup.find_all('a', href=True)
                     
@@ -519,6 +550,16 @@ class ScraperUI:
                     
                     for link in links:
                         href = link['href']
+                        
+                        # Check for profile links even before converting to absolute URLs
+                        is_profile = False
+                        profile_type = None
+                        for type_name, pattern in relative_patterns.items():
+                            if pattern.match(href):
+                                is_profile = True
+                                profile_type = type_name
+                                self.log(f"Found relative {type_name} link: {href}")
+                                break
                         
                         # Convert relative URLs to absolute
                         if href.startswith('/'):
@@ -531,25 +572,27 @@ class ScraperUI:
                         if "sportinglife.com" not in href:
                             continue
                         
-                        # Look for profile pages specifically
-                        # These might be in formats like /profiles/jockey/123 without the full URL
-                        if '/profiles/jockey/' in href or '/profiles/trainer/' in href or '/profiles/horse/' in href:
-                            self.log(f"Found profile link: {href}")
-                        
                         page_links += 1
                         
                         # Check if the URL matches any of our patterns
                         url_type = None
+                        
+                        # First check our main patterns
                         for type_name, pattern in url_patterns.items():
                             if pattern.match(href):
                                 url_type = type_name
                                 break
                         
+                        # If we identified it as a profile link earlier, use that type
+                        if not url_type and is_profile:
+                            url_type = profile_type
+                            self.log(f"Using profile type from relative pattern: {url_type} for {href}")
+                        
                         # Special handling for profile pages
                         if not url_type and profile_pattern.match(href):
                             profile_match = profile_pattern.match(href)
-                            profile_type = profile_match.group(1)  # Extract horse, jockey, or trainer
-                            url_type = f"{profile_type}s"  # Convert to plural for our type system
+                            entity_type = profile_match.group(1)  # Extract horse, jockey, or trainer
+                            url_type = f"{entity_type}s"  # Convert to plural for our type system
                             self.log(f"Matched profile pattern: {href} as {url_type}")
                         
                         if url_type:
@@ -570,16 +613,19 @@ class ScraperUI:
                                 # Log newly found URL
                                 self.log(f"Found {url_type}: {href}")
                         
-                        # Always add results pages and profile pages to the to_visit queue
-                        # as they're likely to contain more links to what we want
-                        if (href not in visited and href not in to_visit and 
-                            ('/results/' in href or '/profiles/' in href)):
-                            to_visit.append(href)
-                            self.log(f"Added to visit queue: {href}")
-                        # For other pages, only add if they might be relevant
-                        elif (href not in visited and href not in to_visit and
-                              any(key in href for key in ['/racing/', '/horse/', '/jockey/', '/trainer/'])):
-                            to_visit.append(href)
+                        # Prioritize profile links in the crawl queue
+                        if href not in visited and href not in to_visit:
+                            # For trainer/jockey profile pages, add them to the front of the queue
+                            if '/profiles/jockey/' in href or '/profiles/trainer/' in href:
+                                to_visit.insert(0, href)
+                                self.log(f"Prioritized profile page in visit queue: {href}")
+                            # Add results pages and other profile pages next
+                            elif '/results/' in href or '/profiles/' in href:
+                                to_visit.append(href)
+                                self.log(f"Added to visit queue: {href}")
+                            # For other pages, only add if they might be relevant
+                            elif any(key in href for key in ['/racing/', '/horse/', '/jockey/', '/trainer/']):
+                                to_visit.append(href)
                     
                     # Update saturation statistics
                     total_links_found += page_links
