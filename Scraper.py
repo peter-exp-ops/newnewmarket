@@ -14,6 +14,12 @@ import os
 import sys
 import sqlite3
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import re
+import time
+import threading
+from urllib.parse import urljoin, urlparse
 
 class ScraperUI:
     def __init__(self, root):
@@ -23,6 +29,10 @@ class ScraperUI:
         
         # Database connection
         self.conn = None
+        
+        # Crawl state
+        self.crawl_running = False
+        self.crawl_thread = None
         
         # Set application icon if available
         try:
@@ -60,6 +70,11 @@ class ScraperUI:
     def on_closing(self):
         """Handle window closing"""
         print("Closing application...")
+        # Stop any running crawl
+        if self.crawl_running and self.crawl_thread and self.crawl_thread.is_alive():
+            self.crawl_running = False
+            self.crawl_thread.join(2)  # Wait for 2 seconds for thread to terminate
+        
         # Close database connection if open
         if self.conn:
             self.conn.close()
@@ -168,7 +183,7 @@ class ScraperUI:
             
             # Initialize the data dictionary
             stats_data = {
-                'Type': ['Races', 'Jockeys', 'Trainers', 'Horses', 'Total'],
+                'Type': ['RACES', 'JOCKEYS', 'TRAINERS', 'HORSES', 'TOTAL'],
                 'Unprocessed': [0, 0, 0, 0, 0],
                 'Failed': [0, 0, 0, 0, 0],
                 'Succeeded': [0, 0, 0, 0, 0],
@@ -279,11 +294,11 @@ class ScraperUI:
         
         # Add some initial data rows with capitalized type values
         initial_data = [
-            ("Races", 0, 0, 0, 0),
-            ("Jockeys", 0, 0, 0, 0),
-            ("Trainers", 0, 0, 0, 0),
-            ("Horses", 0, 0, 0, 0),
-            ("Total", 0, 0, 0, 0)
+            ("RACES", 0, 0, 0, 0),
+            ("JOCKEYS", 0, 0, 0, 0),
+            ("TRAINERS", 0, 0, 0, 0),
+            ("HORSES", 0, 0, 0, 0),
+            ("TOTAL", 0, 0, 0, 0)
         ]
         
         for row in initial_data:
@@ -326,8 +341,236 @@ class ScraperUI:
         ttk.Entry(saturation_frame, textvariable=self.saturation_var).pack(fill="x", pady=(2, 0))
         
         # Crawl button
-        crawl_button = ttk.Button(self.crawl_frame, text="Crawl")
-        crawl_button.pack(fill="x", padx=5, pady=5)
+        self.crawl_button = ttk.Button(self.crawl_frame, text="Crawl", command=self.start_crawl)
+        self.crawl_button.pack(fill="x", padx=5, pady=5)
+        
+        # Crawl status
+        status_frame = ttk.Frame(self.crawl_frame)
+        status_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Label(status_frame, text="Status:").pack(side="left", padx=(0, 5))
+        self.crawl_status_var = tk.StringVar(value="Ready")
+        ttk.Label(status_frame, textvariable=self.crawl_status_var).pack(side="left")
+        
+        # Progress frame
+        progress_frame = ttk.Frame(self.crawl_frame)
+        progress_frame.pack(fill="x", padx=5, pady=5)
+        
+        # URLs found label
+        self.urls_found_var = tk.StringVar(value="URLs found: 0")
+        ttk.Label(progress_frame, textvariable=self.urls_found_var).pack(side="left", padx=(0, 10))
+        
+        # Saturation label
+        self.saturation_rate_var = tk.StringVar(value="Saturation: 0%")
+        ttk.Label(progress_frame, textvariable=self.saturation_rate_var).pack(side="left")
+    
+    def start_crawl(self):
+        """Start the crawling process in a separate thread"""
+        if self.crawl_running:
+            self.log("Crawl already in progress")
+            return
+        
+        if not self.conn:
+            self.log("Please connect to the database first")
+            messagebox.showinfo("Not Connected", "Please connect to the database first.")
+            return
+        
+        # Validate inputs
+        try:
+            timeout_mins = float(self.timeout_var.get())
+            max_urls = int(self.max_urls_var.get())
+            saturation_limit = float(self.saturation_var.get())
+            
+            if timeout_mins <= 0 or max_urls <= 0 or saturation_limit <= 0:
+                raise ValueError("Values must be positive")
+                
+        except ValueError as e:
+            self.log(f"Invalid input values: {e}")
+            messagebox.showerror("Invalid Input", "Please enter valid values for all fields.")
+            return
+        
+        # Start crawler in a separate thread
+        self.crawl_running = True
+        self.crawl_status_var.set("Running")
+        self.crawl_button.config(text="Running...", state="disabled")
+        
+        self.crawl_thread = threading.Thread(target=self.run_crawler)
+        self.crawl_thread.daemon = True
+        self.crawl_thread.start()
+        
+        # Periodically check if crawl is still running
+        self.root.after(500, self.check_crawl_status)
+    
+    def check_crawl_status(self):
+        """Check if the crawl thread is still running and update UI accordingly"""
+        if self.crawl_running and self.crawl_thread and self.crawl_thread.is_alive():
+            # Still running, check again later
+            self.root.after(500, self.check_crawl_status)
+        else:
+            # Crawl finished or stopped
+            self.crawl_running = False
+            self.crawl_status_var.set("Ready")
+            self.crawl_button.config(text="Crawl", state="normal")
+            
+            # Update stats
+            self.get_database_stats()
+    
+    def run_crawler(self):
+        """Run the web crawler"""
+        base_url = self.base_url_var.get()
+        timeout_mins = float(self.timeout_var.get())
+        max_urls = int(self.max_urls_var.get())
+        saturation_limit = float(self.saturation_var.get()) / 100.0  # Convert from percentage to decimal
+        
+        try:
+            self.log(f"Starting crawl from {base_url}")
+            self.log(f"Timeout: {timeout_mins} mins, Max URLs: {max_urls}, Saturation limit: {saturation_limit*100}%")
+            
+            # Initialize crawl variables
+            start_time = time.time()
+            end_time = start_time + (timeout_mins * 60)
+            urls_found = 0
+            visited = set()
+            to_visit = [base_url]
+            url_patterns = {
+                "races": re.compile(r'https://www\.sportinglife\.com/racing/results/\d{4}-\d{2}-\d{2}/[\w-]+/\d+/[\w-]+'),
+                "horses": re.compile(r'https://www\.sportinglife\.com/racing/profiles/horse/\d+'),
+                "jockeys": re.compile(r'https://www\.sportinglife\.com/racing/profiles/jockey/\d+'),
+                "trainers": re.compile(r'https://www\.sportinglife\.com/racing/profiles/trainer/\d+')
+            }
+            
+            # Initialize statistics for saturation calculation
+            total_links_found = 0
+            relevant_links_found = 0
+            
+            # Create a session for better performance
+            session = requests.Session()
+            
+            # Set headers to emulate a browser
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            cursor = self.conn.cursor()
+            
+            # Process URLs until stop conditions are met
+            while (to_visit and 
+                   time.time() < end_time and 
+                   urls_found < max_urls and
+                   self.crawl_running):
+                
+                # Get next URL to process
+                current_url = to_visit.pop(0)
+                
+                if current_url in visited:
+                    continue
+                
+                # Add to visited set
+                visited.add(current_url)
+                
+                # Update UI for current progress
+                self.urls_found_var.set(f"URLs found: {urls_found}")
+                if total_links_found > 0:
+                    saturation_rate = relevant_links_found / total_links_found
+                    self.saturation_rate_var.set(f"Saturation: {saturation_rate*100:.1f}%")
+                    
+                    # Check saturation stop condition
+                    if saturation_rate < saturation_limit and urls_found > 0:
+                        self.log(f"Stopping due to low saturation rate: {saturation_rate*100:.1f}%")
+                        break
+                
+                # Log current URL being processed
+                self.log(f"Processing: {current_url}")
+                
+                try:
+                    # Fetch the page
+                    response = session.get(current_url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    
+                    # Parse HTML
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Find all links
+                    links = soup.find_all('a', href=True)
+                    
+                    # Count all links for saturation calculation
+                    page_links = 0
+                    page_relevant_links = 0
+                    
+                    for link in links:
+                        href = link['href']
+                        
+                        # Convert relative URLs to absolute
+                        if href.startswith('/'):
+                            parsed_base = urlparse(base_url)
+                            href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                        elif not href.startswith(('http://', 'https://')):
+                            href = urljoin(current_url, href)
+                        
+                        # Skip external links or non-sportinglife links
+                        if "sportinglife.com" not in href:
+                            continue
+                        
+                        page_links += 1
+                        
+                        # Check if the URL matches any of our patterns
+                        url_type = None
+                        for type_name, pattern in url_patterns.items():
+                            if pattern.match(href):
+                                url_type = type_name
+                                break
+                        
+                        if url_type:
+                            page_relevant_links += 1
+                            
+                            # Check if this URL is already in the database
+                            cursor.execute("SELECT ID FROM urls WHERE URL = ?", (href,))
+                            if not cursor.fetchone():  # URL doesn't exist in the database
+                                # Add to database with status='unprocessed'
+                                cursor.execute(
+                                    "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                    (href, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', url_type)
+                                )
+                                self.conn.commit()
+                                urls_found += 1
+                                
+                                # Log newly found URL
+                                self.log(f"Found {url_type}: {href}")
+                        
+                        # Add to to_visit list if not already visited
+                        if href not in visited and href not in to_visit:
+                            to_visit.append(href)
+                    
+                    # Update saturation statistics
+                    total_links_found += page_links
+                    relevant_links_found += page_relevant_links
+                    
+                except Exception as e:
+                    self.log(f"Error processing {current_url}: {e}")
+            
+            # Determine why we stopped
+            elapsed_time = time.time() - start_time
+            
+            if time.time() >= end_time:
+                self.log(f"Crawl completed due to timeout ({timeout_mins} mins)")
+            elif urls_found >= max_urls:
+                self.log(f"Crawl completed after finding {urls_found} URLs (max: {max_urls})")
+            elif not self.crawl_running:
+                self.log("Crawl was stopped by user")
+            else:
+                self.log(f"Crawl completed in {elapsed_time:.1f} seconds")
+            
+            self.log(f"Found {urls_found} new URLs")
+            self.log(f"Visited {len(visited)} pages")
+            
+            if total_links_found > 0:
+                final_saturation = relevant_links_found / total_links_found
+                self.log(f"Final saturation rate: {final_saturation*100:.1f}%")
+            
+        except Exception as e:
+            self.log(f"Crawl error: {e}")
+        finally:
+            self.crawl_running = False
     
     def create_scrape_frame(self):
         """Create the scrape section"""
@@ -356,6 +599,11 @@ class ScraperUI:
     
     def log(self, message):
         """Log a message to the output text area"""
+        # Schedule logging on the main thread to avoid threading issues
+        self.root.after(0, self._log_on_main_thread, message)
+    
+    def _log_on_main_thread(self, message):
+        """Actually perform the logging on the main thread"""
         self.output_text.insert(tk.END, f"\n{message}")
         self.output_text.see(tk.END)
 
