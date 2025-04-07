@@ -522,7 +522,7 @@ class ScraperUI:
                     # Parse HTML
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # Check if this page is a profile page that we missed earlier
+                    # Special handling for profile pages
                     if '/profiles/jockey/' in current_url or '/profiles/trainer/' in current_url:
                         url_type = None
                         if '/profiles/jockey/' in current_url:
@@ -571,11 +571,167 @@ class ScraperUI:
                                 # Add to visit queue if not already there
                                 if full_url not in visited and full_url not in to_visit:
                                     to_visit.insert(0, full_url)
-                                    self.log(f"Prioritized trainer page in visit queue: {full_url}")
+                        
+                        # Also find jockey links on horse profile pages
+                        jockey_links = soup.select('a[href*="/racing/profiles/jockey/"]')
+                        for jockey_link in jockey_links:
+                            href = jockey_link['href']
+                            if href.startswith('/'):
+                                parsed_base = urlparse(base_url)
+                                full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                                
+                                # Add to database if not already there
+                                cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                if not cursor.fetchone():
+                                    cursor.execute(
+                                        "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                        (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'jockeys')
+                                    )
+                                    crawler_conn.commit()
+                                    urls_found += 1
+                                    urls_by_type['jockeys'] += 1
+                                    self.log(f"Found jockey link on horse page: {full_url}")
+                                
+                                # Add to visit queue if not already there
+                                if full_url not in visited and full_url not in to_visit:
+                                    to_visit.insert(0, full_url)
+                                    self.log(f"Prioritized jockey page in visit queue: {full_url}")
                     
-                    # Special handling for race result pages - extract all profile links
+                    # Enhanced handling for race result pages - extract all profile links
                     if '/racing/results/' in current_url:
-                        # Find all profile links on the page
+                        # 1. First check the race table rows (which contain most of the profile links)
+                        race_tables = soup.select('table')
+                        for table in race_tables:
+                            table_rows = table.select('tr')
+                            for row in table_rows:
+                                # Find all profile links in this table row
+                                profile_links = row.select('a[href*="/racing/profiles/"]')
+                                for profile_link in profile_links:
+                                    href = profile_link['href']
+                                    if href.startswith('/'):
+                                        parsed_base = urlparse(base_url)
+                                        full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                                        
+                                        # Determine the type
+                                        profile_type = None
+                                        if '/profiles/jockey/' in href:
+                                            profile_type = 'jockeys'
+                                        elif '/profiles/trainer/' in href:
+                                            profile_type = 'trainers'
+                                        elif '/profiles/horse/' in href:
+                                            profile_type = 'horses'
+                                        
+                                        if profile_type:
+                                            # Add to database if not already there
+                                            cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                            if not cursor.fetchone():
+                                                cursor.execute(
+                                                    "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                    (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', profile_type)
+                                                )
+                                                crawler_conn.commit()
+                                                urls_found += 1
+                                                urls_by_type[profile_type] += 1
+                                                self.log(f"Found {profile_type} link in race table: {full_url}")
+                                            
+                                            # Add to visit queue with priority for trainers and jockeys
+                                            if full_url not in visited and full_url not in to_visit:
+                                                if profile_type in ('jockeys', 'trainers'):
+                                                    to_visit.insert(0, full_url)
+                                                    self.log(f"Prioritized {profile_type} page in visit queue: {full_url}")
+                                                else:
+                                                    to_visit.append(full_url)
+                        
+                        # 2. Look for "My Stable" links (these often contain horse profile links)
+                        my_stable_links = soup.select('a.my-stable-link, a[href*="my-stable"]')
+                        for stable_link in my_stable_links:
+                            # The actual profile link might be nearby or in a parent element
+                            parent = stable_link.parent
+                            # Look for profile links in this region of the DOM
+                            region_profile_links = []
+                            # Check in the parent element
+                            parent_links = parent.select('a[href*="/racing/profiles/"]')
+                            region_profile_links.extend(parent_links)
+                            # Also check in siblings
+                            if parent.find_previous_sibling():
+                                prev_links = parent.find_previous_sibling().select('a[href*="/racing/profiles/"]')
+                                region_profile_links.extend(prev_links)
+                            if parent.find_next_sibling():
+                                next_links = parent.find_next_sibling().select('a[href*="/racing/profiles/"]')
+                                region_profile_links.extend(next_links)
+                            
+                            for profile_link in region_profile_links:
+                                href = profile_link['href']
+                                if href.startswith('/'):
+                                    parsed_base = urlparse(base_url)
+                                    full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                                    
+                                    # Determine the type
+                                    profile_type = None
+                                    if '/profiles/jockey/' in href:
+                                        profile_type = 'jockeys'
+                                    elif '/profiles/trainer/' in href:
+                                        profile_type = 'trainers'
+                                    elif '/profiles/horse/' in href:
+                                        profile_type = 'horses'
+                                    
+                                    if profile_type:
+                                        # Add to database if not already there
+                                        cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                        if not cursor.fetchone():
+                                            cursor.execute(
+                                                "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', profile_type)
+                                            )
+                                            crawler_conn.commit()
+                                            urls_found += 1
+                                            urls_by_type[profile_type] += 1
+                                            self.log(f"Found {profile_type} link near 'My Stable': {full_url}")
+                                        
+                                        # Add profile page to visit queue
+                                        if full_url not in visited and full_url not in to_visit:
+                                            to_visit.append(full_url)
+                        
+                        # 3. Look for trainer and jockey information in the race details sections
+                        race_details = soup.select('.race-details, .race-info, .result-details')
+                        for section in race_details:
+                            profile_links = section.select('a[href*="/racing/profiles/"]')
+                            for profile_link in profile_links:
+                                href = profile_link['href']
+                                if href.startswith('/'):
+                                    parsed_base = urlparse(base_url)
+                                    full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                                    
+                                    # Determine the type
+                                    profile_type = None
+                                    if '/profiles/jockey/' in href:
+                                        profile_type = 'jockeys'
+                                    elif '/profiles/trainer/' in href:
+                                        profile_type = 'trainers'
+                                    elif '/profiles/horse/' in href:
+                                        profile_type = 'horses'
+                                    
+                                    if profile_type:
+                                        # Add to database if not already there
+                                        cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                        if not cursor.fetchone():
+                                            cursor.execute(
+                                                "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', profile_type)
+                                            )
+                                            crawler_conn.commit()
+                                            urls_found += 1
+                                            urls_by_type[profile_type] += 1
+                                            self.log(f"Found {profile_type} link in race details: {full_url}")
+                                        
+                                        # Add to visit queue with priority
+                                        if full_url not in visited and full_url not in to_visit:
+                                            if profile_type in ('jockeys', 'trainers'):
+                                                to_visit.insert(0, full_url)
+                                            else:
+                                                to_visit.append(full_url)
+                        
+                        # 4. Also do the general profile link search as before
                         all_profile_links = soup.select('a[href*="/racing/profiles/"]')
                         for profile_link in all_profile_links:
                             href = profile_link['href']
@@ -605,12 +761,11 @@ class ScraperUI:
                                         urls_by_type[profile_type] += 1
                                         self.log(f"Found {profile_type} link on race page: {full_url}")
                                     
-                                    # Add jockey and trainer links to visit queue with priority
-                                    if profile_type in ('jockeys', 'trainers') and full_url not in visited and full_url not in to_visit:
-                                        to_visit.insert(0, full_url)
-                                        self.log(f"Prioritized {profile_type} page in visit queue: {full_url}")
+                                    # Add to visit queue if not already there
+                                    if full_url not in visited and full_url not in to_visit:
+                                        to_visit.append(full_url)
                     
-                    # Find all links
+                    # General link discovery for all pages
                     links = soup.find_all('a', href=True)
                     
                     # Count all links for saturation calculation
