@@ -734,10 +734,6 @@ class ScraperUI:
                                         urls_found += 1
                                         urls_by_type[profile_type] += 1
                                         self.log(f"Found {profile_type} link on race page: {full_url}")
-                                    
-                                    # Add to visit queue if not already there
-                                    if full_url not in visited and full_url not in to_visit:
-                                        to_visit.append(full_url)
                         
                         # 2. Look for race result tables and process each row
                         race_tables = soup.select('table')
@@ -774,13 +770,53 @@ class ScraperUI:
                                                 urls_found += 1
                                                 urls_by_type[profile_type] += 1
                                                 self.log(f"Found {profile_type} link in race table: {full_url}")
-                                            
-                                            # Add to visit queue if not already there
-                                            if full_url not in visited and full_url not in to_visit:
-                                                to_visit.append(full_url)
+                                
+                                # Look for trainer/jockey text patterns
+                                row_text = row.get_text()
+                                if row_text:
+                                    # Look for trainer pattern (T: Name)
+                                    trainer_match = re.search(r'T:\s*([^J]+)', row_text)
+                                    if trainer_match:
+                                        trainer_name = trainer_match.group(1).strip()
+                                        # Construct trainer profile URL
+                                        trainer_url = f"/racing/profiles/trainer/{trainer_name.lower().replace(' ', '-')}"
+                                        parsed_base = urlparse(base_url)
+                                        full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{trainer_url}"
+                                        
+                                        # Add to database if not already there
+                                        cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                        if not cursor.fetchone():
+                                            cursor.execute(
+                                                "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'trainers')
+                                            )
+                                            crawler_conn.commit()
+                                            urls_found += 1
+                                            urls_by_type['trainers'] += 1
+                                            self.log(f"Found trainer from text pattern: {full_url}")
+                                    
+                                    # Look for jockey pattern (J: Name)
+                                    jockey_match = re.search(r'J:\s*([^T]+)', row_text)
+                                    if jockey_match:
+                                        jockey_name = jockey_match.group(1).strip()
+                                        # Construct jockey profile URL
+                                        jockey_url = f"/racing/profiles/jockey/{jockey_name.lower().replace(' ', '-')}"
+                                        parsed_base = urlparse(base_url)
+                                        full_url = f"{parsed_base.scheme}://{parsed_base.netloc}{jockey_url}"
+                                        
+                                        # Add to database if not already there
+                                        cursor.execute("SELECT ID FROM urls WHERE URL = ?", (full_url,))
+                                        if not cursor.fetchone():
+                                            cursor.execute(
+                                                "INSERT INTO urls (URL, Date_accessed, status, Type) VALUES (?, ?, ?, ?)",
+                                                (full_url, time.strftime('%Y-%m-%d %H:%M:%S'), 'unprocessed', 'jockeys')
+                                            )
+                                            crawler_conn.commit()
+                                            urls_found += 1
+                                            urls_by_type['jockeys'] += 1
+                                            self.log(f"Found jockey from text pattern: {full_url}")
                         
                         # 3. Look for specific elements that might contain trainer/jockey info
-                        # This handles cases where the info might be in divs or spans instead of tables
                         info_elements = soup.select('.result-details, .race-details, .runner-details, [class*="jockey"], [class*="trainer"]')
                         for element in info_elements:
                             profile_links = element.select('a[href*="/racing/profiles/"]')
@@ -811,10 +847,6 @@ class ScraperUI:
                                             urls_found += 1
                                             urls_by_type[profile_type] += 1
                                             self.log(f"Found {profile_type} link in info element: {full_url}")
-                                        
-                                        # Add to visit queue if not already there
-                                        if full_url not in visited and full_url not in to_visit:
-                                            to_visit.append(full_url)
                     
                     # General link discovery for all pages
                     links = soup.find_all('a', href=True)
